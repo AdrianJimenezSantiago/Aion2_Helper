@@ -110,6 +110,7 @@ class Overlay:
         self._height = 0
         self._drag_from = (0, 0)
         self._radar_center = (W / 2, HEADER_H + RADAR / 2)
+        self._disp_me: Vec3 | None = None  # where you are drawn: glides towards the reports
 
         ov = self.config["overlay"]
         self.compact = bool(ov.get("compact", False))
@@ -261,8 +262,35 @@ class Overlay:
     def _frame_ms(self, now: float) -> int:
         if not self.animations:
             return STATIC_FRAME_MS
-        busy = self._pings or self._toasts or now < self._alert_until
+        moving = self._snap is not None and self._snap.velocity is not None
+        busy = self._pings or self._toasts or now < self._alert_until or moving
         return FRAME_MS if busy else IDLE_FRAME_MS
+
+    def _rel(self, pos: Vec3 | None, dist: float | None, bear: float | None) -> tuple[float | None, float | None]:
+        """Distance (m) and bearing from where you are drawn, so the cards move as smoothly as the radar."""
+        me = self._disp_me
+        if me is None or pos is None:
+            return dist, bear
+        return math.hypot(pos[0] - me[0], pos[1] - me[1]) / self.config["units_per_meter"], bearing(me, pos)
+
+    def _display_me(self, snap: Snapshot, now: float) -> Vec3 | None:
+        """Your drawn position: the last report carried forward at your speed (up to 1.5 s),
+        approached smoothly so the radar glides instead of jumping between reports."""
+        me = snap.self_pos
+        if me is None:
+            self._disp_me = None
+            return None
+        target = me
+        if snap.velocity is not None and snap.pos_time:
+            dt = min(max(0.0, now - snap.pos_time), 1.5)
+            target = (me[0] + snap.velocity[0] * dt, me[1] + snap.velocity[1] * dt, me[2])
+        d = self._disp_me
+        if d is None or not self.animations or math.hypot(target[0] - d[0], target[1] - d[1]) > 3000:
+            self._disp_me = target  # first fix, or a teleport: no gliding across the map
+        else:
+            k = 0.35
+            self._disp_me = (d[0] + (target[0] - d[0]) * k, d[1] + (target[1] - d[1]) * k, target[2])
+        return self._disp_me
 
     # ───── drawing ─────
 
@@ -413,7 +441,7 @@ class Overlay:
             d = T.angle_diff(bearing, sweep)
             return max(0.0, 1 - d / 60)
 
-        me = snap.self_pos
+        me = self._display_me(snap, now)
         if me is None:
             c.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=T.FAINT, outline="")
             c.create_text(cx, cy + 22, text="aprendiendo tu posición…", fill=T.MUTED, font=f["small"])
@@ -534,15 +562,16 @@ class Overlay:
         ns = snap.next_spot
         if ns is None or ns.distance_m is None:
             return y + 6
+        ns_dist, ns_bear = self._rel(ns.pos, ns.distance_m, ns.bearing_deg)
         c, f = self.canvas, self.fonts
         y0, y1 = y + 8, y + 52
         self._card(y0, y1, T.ACCENT)
-        b = self._screen_bearing(ns.bearing_deg)
+        b = self._screen_bearing(ns_bear)
         ax, ay = M + 22, (y0 + y1) / 2
         c.create_oval(ax - 13, ay - 13, ax + 13, ay + 13, fill=T.fade(T.ACCENT, 0.15, T.PANEL_HI), outline="")
         c.create_polygon(*T.arrow(ax, ay, b, 9), fill=T.ACCENT, outline="")
         c.create_text(M + 42, y0 + 12, text="SIGUIENTE SPOT", fill=T.MUTED, font=f["tiny"], anchor="w")
-        c.create_text(M + 42, y0 + 29, text=f"{T.fmt_distance(ns.distance_m)} · {T.compass(b)}", fill=T.TEXT, font=f["value"], anchor="w")
+        c.create_text(M + 42, y0 + 29, text=f"{T.fmt_distance(ns_dist)} · {T.compass(b)}", fill=T.TEXT, font=f["value"], anchor="w")
 
         rng = self.config["radar_range_m"]
         near = [s for s in snap.spots if s.distance_m is not None and s.distance_m <= rng]
@@ -575,15 +604,16 @@ class Overlay:
             yc = (y0 + y1) / 2
             c.create_polygon(*T.rounded_rect(M + 1, y0 + 6, M + 4, y1 - 6, 1.5), smooth=True, fill=col, outline="")
             ax = M + 22
-            if v.bearing_deg is not None:
-                b = self._screen_bearing(v.bearing_deg)
+            v_dist, v_bear = self._rel(v.entity.pos, v.distance_m, v.bearing_deg)
+            if v_bear is not None:
+                b = self._screen_bearing(v_bear)
                 c.create_oval(ax - 11, yc - 11, ax + 11, yc + 11, fill=T.fade(col, 0.15, T.PANEL_HI), outline="")
                 c.create_polygon(*T.arrow(ax, yc, b, 8), fill=col, outline="")
                 where = T.compass(b)
             else:
                 c.create_polygon(*T.diamond(ax, yc, 6), fill=col, outline="")
                 where = ""
-            t = c.create_text(M + 40, yc, text=T.fmt_distance(v.distance_m) if v.distance_m is not None else "distancia ?",
+            t = c.create_text(M + 40, yc, text=T.fmt_distance(v_dist) if v_dist is not None else "distancia ?",
                               fill=T.TEXT, font=f["value"], anchor="w")  # fmt: skip
             x = c.bbox(t)[2] + 6
             if where:

@@ -441,3 +441,41 @@ def test_noise_opcode_is_not_learned_as_movement():
     det = CubeDetector(Config(None))
     ServerStreamParser(DEFAULT_OPCODES, det.diag).consume(stream)
     assert det.diag.learned_moves == {}
+
+
+# Third live session: 34 36 objects. 1500000 sat on an odyle gathering node, to 0.0 m.
+LIVE3_OBJECTS = [
+    "3d 34 36 ad 87 02 04 00 b9 52 12 00 ed aa 38 c7 1c 4b fe 47 00 04 9d 46 00 00 00 00 00 ac ad 43 01 01 01 2b 3c 5f 39 a1 01 00 00 00 00 00 00 00 00 00 00 8f 9c 3c 60 07",
+    "3d 34 36 bd b1 02 04 00 60 e3 16 00 00 bf 62 c7 00 ea f9 47 df 6f 9d 46 00 00 00 00 00 00 00 00 01 01 01 84 c1 dd 3a a1 01 00 00 00 00 00 00 00 00 00 00 e4 31 83 b7 07",
+]
+
+
+def test_live_object_spawns_are_read():
+    import pytest
+
+    events, _ = ServerStreamParser().consume(b"".join(_live(h) for h in LIVE3_OBJECTS))
+    spawns = [e for e in events if isinstance(e, Spawn)]
+    assert [(s.entity_id, s.code) for s in spawns] == [(33709, 1200825), (39101, 1500000)]
+    assert spawns[1].pos == pytest.approx((-58047.0, 127956.0, 20151.9), abs=0.1)
+
+
+def test_other_players_are_never_taken_for_you():
+    from aion2_helper.protocol import EntityMove, PlayerSpawn, ZoneChange
+
+    det, clock = _det()
+    det.handle(ZoneChange((1000.0, 1000.0, 0.0)))
+    det.handle(PlayerSpawn(777))  # someone else stepping out of the same portal
+    for i in range(6):
+        clock.t += 0.3
+        det.handle(EntityMove(777, (1000.0 + i * 50, 1000.0, 0.0)))
+    assert det.self_id is None
+    for i in range(2):
+        clock.t += 0.3
+        det.handle(EntityMove(2348, (1100.0 + i * 120, 1000.0, 0.0)))
+    assert det.self_id == 2348
+    clock.t += 0.2
+    v = det.snapshot().velocity
+    assert v is not None and v[0] > 50 and abs(v[1]) < 1  # moving east
+    clock.t += 0.3
+    det.handle(EntityMove(2348, (1400.0, 1000.0, 0.0)))  # the next report of yours
+    assert det.snapshot().heading_deg == pytest_approx(90.0)

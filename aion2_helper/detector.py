@@ -13,7 +13,7 @@ from typing import Callable, TextIO
 
 from .config import Config
 from .diag import Diagnostics, log
-from .protocol import Despawn, EntityMove, Event, MapLoad, SelfIdentity, Spawn, Vec3, ZoneChange
+from .protocol import Despawn, EntityMove, Event, MapLoad, PlayerSpawn, SelfIdentity, Spawn, Vec3, ZoneChange
 from .selfpos import SelfPositionTracker, distance, distance_2d
 from .spots import SpotStore
 from .worldmap import (
@@ -72,7 +72,9 @@ class Snapshot:
     entity_count: int
     world: str = ""
     self_source: str | None = None  # "servidor", "teletransporte", "aproximada" or "cliente"
-    heading_deg: float | None = None  # where you are walking (compass), when you move  # state of the community data, for the status line
+    heading_deg: float | None = None  # where you are walking (compass), when you move
+    velocity: tuple[float, float] | None = None  # units/s on x, y, for smooth drawing between records
+    pos_time: float = 0.0  # when self_pos was reported  # state of the community data, for the status line
     map_id: str | None = None
     map_name: str | None = None
     cube_rule: str | None = None  # "key", "mixed" or None
@@ -128,6 +130,7 @@ class CubeDetector:
         self._self_t = 0.0
         self._self_candidates: dict[int, int] = {}
         self._self_hint: int | None = None
+        self._others: set[int] = set()  # other players: never you
         self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
 
     @property
@@ -240,8 +243,7 @@ class CubeDetector:
                 self._recent.clear()
                 if event.pos is not None:
                     self._teleport = (event.pos, t)
-                    self.self_id = None
-                    self._self_candidates.clear()
+                    self._self_candidates.clear()  # a new zone: your entity is the one moving from here
                     self._set_self(event.pos, "teletransporte", t)
                 self._write({"type": "zone", "t": t, "pos": event.pos})
             elif isinstance(event, EntityMove):
@@ -250,7 +252,12 @@ class CubeDetector:
                 self._map_load(event.map_id, t)
                 if event.pos is not None:
                     self._teleport = (event.pos, t)
+                    self._self_candidates.clear()  # a new zone: your entity is the one moving from here
                     self._set_self(event.pos, "teletransporte", t)
+            elif isinstance(event, PlayerSpawn):
+                self._others.add(event.entity_id)
+                if len(self._others) > 5000:
+                    self._others.clear()
             elif isinstance(event, SelfIdentity):
                 # Only a hint: what follows the 33 36 opcode is not proven to be the entity id
                 # the movement records use (a live session got 16329 there, 2348 in the moves).
@@ -279,6 +286,18 @@ class CubeDetector:
         if source == "teletransporte":
             self.tracker.add_anchor(pos)  # where the client must report you, too
 
+    def velocity(self, now: float) -> tuple[float, float] | None:
+        """Your speed (units/s) from the last two reports, if recent: lets the radar glide between them."""
+        if len(self._trail) < 2:
+            return None
+        (t1, a), (t2, b) = self._trail[-2], self._trail[-1]
+        if now - t2 > 3.0 or not (0.05 <= t2 - t1 <= 3.0):
+            return None
+        vx, vy = (b[0] - a[0]) / (t2 - t1), (b[1] - a[1]) / (t2 - t1)
+        if (vx * vx + vy * vy) ** 0.5 > 3000:  # faster than any mount: a jump in the data
+            return None
+        return vx, vy
+
     def heading(self, now: float) -> float | None:
         """Bearing of your last couple of seconds of movement, if you moved more than 1.5 m."""
         recent = [(t, p) for t, p in self._trail if now - t <= 2.5]
@@ -305,15 +324,23 @@ class CubeDetector:
             e.pos = mv.pos
             e.last_seen = t
             return
-        # Not a spawned entity: maybe you. Your own updates start where you teleported.
+        if mv.entity_id in self._others:
+            return
+        # Moving, yet never spawned as a monster, object, pet or player: most likely you.
+        # Moving where you just teleported counts much more.
+        score = 1
         if self._teleport is not None and t - self._teleport[1] <= SELF_MATCH_S:
             if distance_2d(mv.pos, self._teleport[0]) <= SELF_MATCH_UNITS:
-                n = self._self_candidates.get(mv.entity_id, 0) + 1
-                self._self_candidates[mv.entity_id] = n
-                if n >= 2:
-                    self.self_id = mv.entity_id
-                    log.info("Tu entidad: id %s", mv.entity_id)
-                    self._set_self(mv.pos, "servidor", t)
+                score = 5
+        n = self._self_candidates.get(mv.entity_id, 0) + score
+        self._self_candidates[mv.entity_id] = n
+        ranked = sorted(self._self_candidates.values(), reverse=True)
+        second = ranked[1] if len(ranked) > 1 else 0
+        settled = self.self_id is not None and self.self_source == "servidor" and t - self._self_t < 10
+        if not settled and n == ranked[0] and n >= 6 and n >= 2 * second:
+            self.self_id = mv.entity_id
+            log.info("Tu entidad: id %s", mv.entity_id)
+            self._set_self(mv.pos, "servidor", t)
 
     def _map_load(self, number: int, t: float) -> None:
         self.diag.count("map_loads")
@@ -490,8 +517,10 @@ class CubeDetector:
                 (v for v in views if not v.is_cube and v.entity.code not in ignore),
                 key=key,
             )[:nearby_limit]
+            precise = self.self_source != "aproximada"
             snap = Snapshot(self.status, me, self.self_known, cubes, nearby, [], len(self._entities), self.world_status,
-                            self.self_source, self.heading(now) if self.self_source != "aproximada" else None)  # fmt: skip
+                            self.self_source, self.heading(now) if precise else None,
+                            self.velocity(now) if precise else None, self._self_t)  # fmt: skip
             m = self.current_map
             if m is not None:
                 snap.map_id, snap.map_name, snap.cube_rule = m.map_id, m.name, m.cube_rule

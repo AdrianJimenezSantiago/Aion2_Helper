@@ -16,7 +16,11 @@ What is known comes from the open-source DPS meters that read the same stream
     1a 37 <id varint> <2 bytes> <x> <y> <z> ...      an entity moved
     1b 37 | 1c 37 <id varint> <flags> [<1 byte> if flags & 1] <x> <y> <z>   an entity moved; your
                                                      own entity too (flags 05 03), a few metres from you
-    33 36 <id varint> ...                            your self record, at each map load: your entity id
+    33 36 <id varint> ...                            your self record, at each map load
+    34 36 <id varint> <kind u8> 00 <code u32> <x> <y> <z> ...   an object appeared: gathering
+                                                     nodes (1500000 sat on an odyle node to 0.0 m),
+                                                     Empyrean Traces, and the Hidden Cubes
+    45 36 <id varint> ...                            another player appeared (carries names: never sampled)
 
 Layouts of 23 36, 21 36 and 1a-1c 37 were read off a live capture of 2026-10-14
 (Verteron), where the positions all agree to a few metres.
@@ -232,7 +236,12 @@ class SelfIdentity:
     entity_id: int
 
 
-Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity
+@dataclass
+class PlayerSpawn:
+    entity_id: int
+
+
+Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn
 
 # Movement records not in the table are learned: an opcode whose short packets keep carrying
 # <id varint> <skip bytes> <plausible position> is taken as one, with that skip.
@@ -308,6 +317,21 @@ def parse_spawn_at(data: bytes, at: int) -> Spawn | None:
     return Spawn(eid, kind, code, pos, bytes(data[at : min(len(data), at + 96)]))
 
 
+def parse_object_spawn(packet: bytes, o: int) -> Spawn | None:
+    """``34 36 <id> <kind> 00 <code u32> <x> <y> <z>``: an object (node, trace, cube) appeared."""
+    eid, l1 = read_varint(packet, o + 2)
+    if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID):
+        return None
+    at = o + 2 + l1
+    if at + 18 > len(packet):
+        return None
+    code = struct.unpack_from("<I", packet, at + 2)[0]
+    pos = _read_pos(packet, at + 6)
+    if not (1 <= code <= MAX_ENTITY_ID) or pos is None:
+        return None
+    return Spawn(eid, packet[at], code, pos, bytes(packet[o : min(len(packet), o + 96)]))
+
+
 @dataclass
 class Opcodes:
     spawn: list[bytes]
@@ -318,6 +342,8 @@ class Opcodes:
     # Movement records: opcode -> bytes between the entity id and the position.
     moves: dict[bytes, int] = field(default_factory=lambda: {b"\x1a\x37": 2, b"\x1b\x37": 1, b"\x1c\x37": 1})
     self_identity: list[bytes] = field(default_factory=lambda: [b"\x33\x36"])
+    object_spawn: list[bytes] = field(default_factory=lambda: [b"\x34\x36"])
+    player_spawn: list[bytes] = field(default_factory=lambda: [b"\x45\x36", b"\x44\x36"])
 
     @staticmethod
     def _parse(codes: list[str]) -> list[bytes]:
@@ -333,6 +359,8 @@ class Opcodes:
             map_load=cls._parse(cfg.get("map_load", ["21 36"])),
             moves={bytes.fromhex(k): int(v) for k, v in cfg.get("moves", {"1A 37": 2, "1B 37": 1, "1C 37": 1}).items()},
             self_identity=cls._parse(cfg.get("self_identity", ["33 36"])),
+            object_spawn=cls._parse(cfg.get("object_spawn", ["34 36"])),
+            player_spawn=cls._parse(cfg.get("player_spawn", ["45 36", "44 36"])),
         )
 
 
@@ -350,7 +378,10 @@ class ServerStreamParser:
         self._spawn_leads = {c[0] for c in opcodes.spawn}
         # opcode -> [packets seen, hits per skip 0..3]
         self._move_stats: dict[bytes, list[int]] = {}
-        self._not_moves = set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load) | set(opcodes.self_identity)
+        self._not_moves = (
+            set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load)
+            | set(opcodes.self_identity) | set(opcodes.object_spawn) | set(opcodes.player_spawn)
+        )  # fmt: skip
 
     def consume(self, buffer: bytes) -> tuple[list[Event], int]:
         events: list[Event] = []
@@ -419,6 +450,15 @@ class ServerStreamParser:
             eid, l1 = read_varint(packet, o + 2)
             if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:
                 events.append(SelfIdentity(eid))
+        if op in self.op.player_spawn:
+            eid, l1 = read_varint(packet, o + 2)
+            if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:
+                events.append(PlayerSpawn(eid))
+        if op in self.op.object_spawn:
+            sp = parse_object_spawn(packet, o)
+            if sp is not None:
+                events.append(sp)
+                return
         if op in self.op.despawn:
             eid, l1 = read_varint(packet, o + 2)
             _, l2 = read_varint(packet, o + 2 + max(l1, 0)) if l1 > 0 else (-1, -1)

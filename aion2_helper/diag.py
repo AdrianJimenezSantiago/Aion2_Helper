@@ -68,7 +68,7 @@ class Diagnostics:
         mins = max((time.time() - self.started) / 60, 1 / 60)
         lines = [
             f"Red: {c['seg_down']} segmentos del servidor, {c['seg_up']} del cliente, "
-            f"{c['conn_locks']} conexiones fijadas",
+            f"{c['seg_other']} de otras conexiones del servidor (ignorados), {c['conn_locks']} conexiones fijadas",
             f"Tramas: {c['frames']} paquetes, {c['bundles']} bloques LZ4 ({c['bundle_fail']} fallidos), "
             f"{c['resync']} bytes de resincronización",
             "Opcodes más frecuentes: " + (", ".join(f"{op}×{n}" for op, n in ops) or "ninguno"),

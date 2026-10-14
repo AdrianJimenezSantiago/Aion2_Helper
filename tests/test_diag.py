@@ -94,3 +94,42 @@ def test_dispatcher_counts_segments():
     for i in range(14):
         d.process(Segment(float(i) * 0.1, "10.0.0.1", 7777, "10.0.0.2", 5000, 1 + i * 10, frame(b"\x0e\x00\x36\x01\x02\x03")))
     assert det.diag.counts["conn_locks"] == 1 and det.diag.counts["seg_down"] >= 2
+
+
+def test_tls_connection_on_the_same_server_port_is_not_mixed_in():
+    """The game server also speaks TLS from its port on a second connection (seen live 2026-10-14)."""
+    import os
+
+    from aion2_helper.protocol import Spawn as SpawnEvent
+
+    det = CubeDetector(Config(None))
+    d = Dispatcher(det, DEFAULT_OPCODES)
+    server = ("193.202.112.94", 13328)
+    game_seq, tls_seq = 1000, 900_000_000
+    spawned = []
+    original = det.handle
+    det.handle = lambda e, t=None: (spawned.append(e) if isinstance(e, SpawnEvent) else None, original(e, t))
+    for i in range(40):
+        t = 10.0 + i * 0.05
+        tls = bytes([0x17, 0x03, 0x03, 0x00, 0x40]) + os.urandom(0x40)
+        d.process(Segment(t, *server, "192.168.1.5", 50001, tls_seq, tls))
+        tls_seq += len(tls)
+        game = frame(b"\x0e\x00\x36\x01\x02") + frame(spawn_body(700 + i, 2_100_603, (74919.0 + i, 95713.0, 11077.0)))
+        d.process(Segment(t + 0.01, *server, "192.168.1.5", 50000, game_seq, game))
+        game_seq += len(game)
+    assert d.locked and d._flow == ("193.202.112.94", 13328, "192.168.1.5", 50000)
+    assert det.diag.counts["seg_other"] >= 25
+    assert len(spawned) >= 28  # every spawn after the lock is read; none lost to the TLS bytes
+
+
+def test_game_moving_to_a_new_connection_is_followed():
+    det = CubeDetector(Config(None))
+    d = Dispatcher(det, DEFAULT_OPCODES)
+    seq = 1
+    for i in range(14):
+        d.process(Segment(i * 0.1, "10.0.0.1", 7777, "10.0.0.2", 5000, seq, frame(b"\x0e\x00\x36\x01")))
+        seq += 6
+    assert d._flow[3] == 5000
+    for i in range(14):  # 10 s later, a reconnect from a new client port
+        d.process(Segment(10 + i * 0.1, "10.0.0.1", 7777, "10.0.0.2", 5002, 1 + i * 6, frame(b"\x0e\x00\x36\x01")))
+    assert d._flow[3] == 5002 and det.diag.counts["conn_locks"] == 2

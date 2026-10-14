@@ -26,6 +26,8 @@ MAX_HOLD_S = 0.5
 SIGNATURE_LOCK_HITS = 12
 SIGNATURE_WINDOW_S = 3.0
 STALE_CONNECTION_S = 120.0
+# Another connection may take over once the locked one has carried nothing for this long.
+MOVE_QUIET_S = 5.0
 
 
 @dataclass
@@ -102,7 +104,13 @@ def _seq_diff(a: int, b: int) -> int:
 
 
 class Dispatcher:
-    """Locks onto the game connection and routes its two directions."""
+    """Locks onto the game connection and routes its two directions.
+
+    A connection is the full (server, client) address pair, not just the
+    server's address: the game server also talks TLS from the same port on a
+    second connection, and mixing the two streams breaks the reassembly
+    (everything turns into garbage frames and no spawn is ever read).
+    """
 
     def __init__(self, detector: CubeDetector, opcodes: Opcodes, recorder: "PcapWriter | None" = None):
         self.detector = detector
@@ -110,7 +118,8 @@ class Dispatcher:
         self.recorder = recorder
         self.parser = ServerStreamParser(opcodes, detector.diag)
         self._candidates: dict[tuple, tuple[int, float]] = {}
-        self._server: tuple[str, int] | None = None
+        # (server ip, server port, client ip, client port)
+        self._flow: tuple[str, int, str, int] | None = None
         self._down: TcpStream | None = None
         self._up: TcpStream | None = None
         self._last_seen = 0.0
@@ -118,27 +127,34 @@ class Dispatcher:
 
     @property
     def locked(self) -> bool:
-        return self._server is not None
+        return self._flow is not None
 
     def process(self, seg: Segment) -> None:
-        if self._server and seg.t - self._last_seen > STALE_CONNECTION_S:
+        if self._flow and seg.t - self._last_seen > STALE_CONNECTION_S:
             self.reset()
-        if self._server is None:
+        if self._flow is None:
             self._search(seg)
             return
-        host, port = self._server
-        if (seg.src, seg.sport) == (host, port):
+        sip, sport, cip, cport = self._flow
+        if (seg.src, seg.sport, seg.dst, seg.dport) == (sip, sport, cip, cport):
             self.detector.diag.count("seg_down")
             self._last_seen = seg.t
             if self.recorder:
                 self.recorder.write(seg)
             self._down.add(seg.seq, seg.data, seg.t)
-        elif (seg.dst, seg.dport) == (host, port):
+        elif (seg.src, seg.sport, seg.dst, seg.dport) == (cip, cport, sip, sport):
             self.detector.diag.count("seg_up")
             self._last_seen = seg.t
             if self.recorder:
                 self.recorder.write(seg)
             self._up.add(seg.seq, seg.data, seg.t)
+        else:
+            if (seg.src, seg.sport) == (sip, sport) or (seg.dst, seg.dport) == (sip, sport):
+                self.detector.diag.count("seg_other")  # e.g. the TLS connection on the same port
+            # The game may move to another connection (reconnect, VPN, instance server):
+            # take it once the locked one has gone quiet and the new one carries the game's markers.
+            if seg.t - self._last_seen > MOVE_QUIET_S:
+                self._search(seg)
 
     def _search(self, seg: Segment) -> None:
         d = seg.data
@@ -146,28 +162,30 @@ class Dispatcher:
             return  # TLS: not the game stream
         if not any(sig in d for sig in self.opcodes.signatures):
             return
+        # The game's markers come from the server: the sender of these segments is the server side.
         key = (seg.src, seg.sport, seg.dst, seg.dport)
         hits, last = self._candidates.get(key, (0, seg.t))
         if seg.t - last > SIGNATURE_WINDOW_S:
             hits = 0
         self._candidates[key] = (hits + 1, seg.t)
         if hits + 1 >= SIGNATURE_LOCK_HITS:
-            self._lock(seg)
+            self._lock(key, seg)
 
-    def _lock(self, seg: Segment) -> None:
-        self._server = (seg.src, seg.sport)
+    def _lock(self, flow: tuple[str, int, str, int], seg: Segment) -> None:
+        self._flow = flow
         self._last_seen = seg.t
         self._candidates.clear()
         self._down = TcpStream(self._consume_down)
         self._up = TcpStream(self._consume_up)
-        self.detector.status = f"Conectado al juego ({seg.src}:{seg.sport})"
+        sip, sport, cip, cport = flow
+        self.detector.status = f"Conectado al juego ({sip}:{sport})"
         self.detector.diag.count("conn_locks")
-        log.info("Conexión del juego fijada: %s:%s -> %s:%s", seg.src, seg.sport, seg.dst, seg.dport)
+        log.info("Conexión del juego fijada: servidor %s:%s, cliente %s:%s", sip, sport, cip, cport)
         self.detector.new_connection(seg.t)
-        self._down.add(seg.seq, seg.data, seg.t)
+        (self._down if seg.src == sip and seg.sport == sport else self._up).add(seg.seq, seg.data, seg.t)
 
     def reset(self) -> None:
-        self._server = None
+        self._flow = None
         self._down = self._up = None
         self._candidates.clear()
         self.detector.status = "Buscando la conexión del juego"

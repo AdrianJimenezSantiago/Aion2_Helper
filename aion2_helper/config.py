@@ -46,7 +46,8 @@ DEFAULTS: dict = {
     # The game's process name; capture is ignored while it is not running (Windows only).
     "game_process": "AION2",
     "sound": True,
-    "overlay": {"x": 40, "y": 200, "alpha": 0.85, "click_through": False},
+    # compact: radar only; animations: radar sweep, pulses and pings (off = lighter on the CPU).
+    "overlay": {"x": 40, "y": 200, "alpha": 0.9, "click_through": False, "compact": False, "animations": True},
     "hotkeys": {
         "mark": "<f8>",
         "tag_nearest": "<f9>",
@@ -54,6 +55,7 @@ DEFAULTS: dict = {
         "toggle_overlay": "<f11>",
         "discovery": "<f7>",
         "reset_spots": "<f6>",
+        "compact": "<ctrl>+<f11>",
     },
 }
 

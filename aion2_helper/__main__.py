@@ -19,7 +19,7 @@ def _detector(cfg: Config, log: Path | None, overlay_ref: list):
     spots = SpotStore(cfg.path.parent / "spots.json" if cfg.path else None)
     return CubeDetector(
         cfg,
-        on_new_cube=lambda e: overlay_ref[0].alert() if overlay_ref else print(f"¡Hidden Cube! {e}"),
+        on_new_cube=lambda e: overlay_ref[0].alert(e) if overlay_ref else print(f"¡Hidden Cube! {e}"),
         discovery_log=log,
         spots=spots,
     )

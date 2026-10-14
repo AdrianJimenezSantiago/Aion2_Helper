@@ -5,7 +5,7 @@ Overlay **de uso personal** para AION 2 que avisa (con sonido y un radar) cuando
 guía por los 3 722 spots posibles de los cubos (los rojos que piden llave y los dorados gratuitos) y
 tacha los que ya has revisado.
 
-![Overlay en modo demo](docs/overlay-demo.png)
+![Overlay: aviso de cubo nuevo, lista de cubos y modo compacto](docs/overlay-demo.png)
 
 > ⚠️ Usar herramientas de terceros puede ir contra los términos de servicio de AION 2. El proyecto
 > no tiene relación con NCSOFT. Úsalo bajo tu responsabilidad.
@@ -109,8 +109,32 @@ descargados, `analyze` los ordena solo, sin marcas F8. Para colorear un código 
 | F9 | La entidad más cercana es un cubo: guarda su código |
 | F10 | Click-through on/off (el ratón atraviesa el overlay) |
 | F11 | Mostrar/ocultar overlay |
+| Ctrl+F11 | Modo compacto (solo el radar) |
 
-Arrastra el overlay con el ratón para moverlo; con **clic derecho** se cierra.
+Con el ratón:
+
+- **arrastrar** mueve el overlay;
+- la **rueda** cambia el alcance del radar (30–240 m);
+- **doble clic** en la cabecera activa o desactiva el modo compacto;
+- el **clic derecho** abre un menú: modo compacto, sonido, animaciones, modo descubrimiento,
+  click-through, reiniciar spots, ocultar y cerrar.
+
+## Qué muestra el overlay
+
+- **Cabecera**: mapa actual y su regla de llave (`LLAVE` o `GRATIS / LLAVE`), número de cubos cerca
+  y cuatro luces de estado: conexión con el juego, posición propia, spots de la comunidad y código del
+  cubo. Verde significa que está listo; ámbar, que se está buscando o aprendiendo; rojo, que falta.
+- **Radar**: el norte arriba, con anillos de distancia, un barrido animado y tú en el centro. Los cubos
+  fuera de alcance aparecen como flechas en el borde con su distancia.
+- **Al aparecer un cubo**: ondas en su posición, el borde del panel parpadea con el color del cubo,
+  aparece un aviso y suena una melodía (distinta para los cubos con llave y los gratuitos).
+- **Siguiente spot**: la flecha te lleva al spot pendiente más cercano. La barra verde muestra cuántos
+  spots del radar has revisado ya.
+- **Tarjetas de cubos**: distancia, dirección, altura (▲ encima de ti, en un saliente; ▼ debajo, en el
+  agua o en una cueva), tipo (`LLAVE` o `GRATIS`) y cuánto hace que apareció.
+
+Las animaciones van a 15 fps (30 fps durante un aviso) y cada fotograma tarda unos 10–13 ms. Si el juego
+va justo de CPU, desactívalas en el menú.
 
 ## Spots
 
@@ -118,12 +142,13 @@ En el radar:
 
 | Símbolo | Significado |
 |---|---|
-| ◆ rojo | Hidden Cube que necesita llave |
+| ◆ rojo con halo | Hidden Cube que necesita llave |
 | ◆ dorado | Hidden Cube gratuito (`cube_kinds`) |
 | ◆ naranja | Hidden Cube de tipo desconocido |
 | ○ azul | Spot por revisar |
 | · gris | Spot revisado: pasaste cerca y estaba vacío. Vuelve a azul a los 30 min (`spot_recheck_s`) |
-| ◎ azul claro / flecha | Siguiente spot pendiente más cercano |
+| ◎ azul claro y línea discontinua | Siguiente spot pendiente más cercano (flecha en el borde si está lejos) |
+| ➤ en el borde | Cubo fuera del alcance del radar, con su distancia |
 
 Un spot cuenta como revisado cuando pasas a menos de 40 m (`spot_check_radius_m`). La herramienta ajusta
 ese radio sola según la distancia a la que te van apareciendo los cubos.
@@ -169,7 +194,8 @@ Si el mapa no se reconoce nunca ("buscando mapa"), borra `"world_transform"` (d�
 ejecuta `update-spots`.
 
 Otros ajustes: `radar_range_m`, `radar_rotation_deg` y `radar_mirror` (si el norte del radar no
-coincide con el del mapa), `cube_ttl_s`, `sound`, `overlay.alpha`, `auto_cube_codes` (desactiva el
+coincide con el del mapa), `cube_ttl_s`, `sound`, `overlay.alpha` (transparencia), `overlay.compact`,
+`overlay.animations`, `auto_cube_codes` (desactiva el
 aprendizaje automático), `community.auto_update` y `community.max_age_days`.
 
 ## Desarrollo
@@ -185,7 +211,8 @@ pytest
 | `aion2_helper/capture.py` | Npcap/scapy, reensamblado TCP, detección de la conexión, pcap |
 | `aion2_helper/selfpos.py` | Aprendizaje de la posición propia |
 | `aion2_helper/detector.py` | Estado del mundo y cubos activos |
-| `aion2_helper/overlay.py` | Overlay tkinter y atajos globales |
+| `aion2_helper/overlay.py` | Overlay tkinter (dibujo, efectos, ratón, menú) y atajos globales |
+| `aion2_helper/theme.py` | Paleta, tipografías y geometría del overlay |
 | `aion2_helper/analyze.py` | Ranking de códigos a partir de las marcas F8 |
 | `aion2_helper/spots.py` | Spots vistos por ti |
 | `aion2_helper/community.py` | Descarga y conversión de los spots de aion2.th.gl |

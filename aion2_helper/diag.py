@@ -113,7 +113,8 @@ class Diagnostics:
             f"Spawns: {c['spawns']} ({c['spawns_with_pos']} con posición), {c['despawns']} bajas "
             f"(flags: {', '.join(f'{k[13:]}×{n}' for k, n in sorted(c.items()) if k.startswith('despawn_flag_')) or '-'}), "
             f"cambios de zona: {c['zone_changes']} ({c['zone_changes'] / mins:.1f}/min)",
-            f"Movimientos: {c['moves']} de otras entidades, {c['self_moves']} tuyos · mapas cargados: {c['map_loads']}"
+            f"Movimientos: {c['moves']} de otras entidades, {c['self_moves']} tuyos, {c['moves_rejected']} descartados"
+            f" · mapas cargados: {c['map_loads']}"
             + (f" · opcodes de movimiento aprendidos: {', '.join(f'{k} (+{v})' for k, v in self.learned_moves.items())}" if self.learned_moves else ""),
             f"Cliente (cifrado): {c['client_frames']} paquetes",
             "Tus registros por opcode: " + (", ".join(f"{op}×{n}" for op, n in self.self_opcodes.most_common(10)) or "ninguno aún")

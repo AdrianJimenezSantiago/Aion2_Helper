@@ -29,6 +29,10 @@ from .worldmap import (
 )
 
 MAX_ENTITIES = 5000
+# A learned movement opcode's position further than this from the entity's known position is noise.
+LEARNED_MOVE_MAX_JUMP = 5000.0
+# Faster than this between two of your records (units/s) is a misread, not you (flying is ~16 m/s).
+SELF_MAX_SPEED = 5000.0
 # Your own entity: a position update this close (units) to where you just teleported ...
 SELF_MATCH_UNITS = 1500.0
 # ... within this many seconds of the teleport, twice.
@@ -333,6 +337,9 @@ class CubeDetector:
     def _self_update(self, mv: EntityMove, t: float) -> None:
         """One of your own movement records: position, and what it says about where you are heading."""
         last = self._last_fix
+        if last is not None and 0 < t - last[0] <= 5.0 and distance_2d(last[1], mv.pos) / (t - last[0]) > SELF_MAX_SPEED:
+            self.diag.count("moves_rejected")
+            return
         if last is not None and self._moving and 0.2 <= t - last[0] <= 5.0:
             measured = distance_2d(last[1], mv.pos) / (t - last[0])
             if 100 <= measured <= 3000:
@@ -354,7 +361,19 @@ class CubeDetector:
     def self_candidates(self) -> dict[int, int]:
         return dict(self._self_candidates)
 
+    def _plausible(self, mv: EntityMove) -> bool:
+        if not mv.learned:
+            return True
+        known = self.tracker.position if mv.entity_id == self.self_id else None
+        e = self._entities.get(mv.entity_id)
+        if e is not None and e.pos is not None:
+            known = e.pos
+        return known is None or distance_2d(known, mv.pos) <= LEARNED_MOVE_MAX_JUMP
+
     def _move(self, mv: EntityMove, t: float) -> None:
+        if not self._plausible(mv):
+            self.diag.count("moves_rejected")
+            return
         if mv.entity_id == self.self_id or (self.self_id is None and mv.entity_id == self._self_hint):
             self.diag.count("self_moves")
             self._self_update(mv, t)

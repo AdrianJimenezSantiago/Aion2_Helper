@@ -605,3 +605,18 @@ def test_packets_about_you_are_traced(tmp_path):
     lines = (tmp_path / "selftrace.txt").read_text().splitlines()
     assert len(lines) == 1 and " 1d 37 " in lines[0] and "b5 07" in lines[0]
     assert dict(det.diag.self_opcodes) == {"1d 37": 1}
+
+
+def test_impossible_jumps_of_yours_are_ignored():
+    from aion2_helper.protocol import EntityMove
+
+    det, clock = _det()
+    det.self_id = 650
+    det.handle(EntityMove(650, (34625.0, 33763.0, 30041.0), flags=0x05))
+    clock.t += 0.5
+    det.handle(EntityMove(650, (90000.0, -50000.0, 30041.0), flags=0x05))  # 1 km in half a second: a misread
+    assert det.tracker.position == (34625.0, 33763.0, 30041.0)
+    clock.t += 0.5
+    det.handle(EntityMove(650, (34925.0, 33763.0, 30041.0), learned=True))  # 3 m: fine
+    assert det.tracker.position == (34925.0, 33763.0, 30041.0)
+    assert det.diag.counts["moves_rejected"] == 1

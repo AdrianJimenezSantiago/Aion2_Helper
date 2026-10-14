@@ -230,6 +230,7 @@ class EntityMove:
     flags: int | None = None  # the byte after the id in 1b 37 / 1c 37: 05 for your own entity (live)
     yaw: float | None = None  # facing, degrees, Unreal convention (atan2(dy, dx)); u16 after the position
     phase: str | None = None  # "start" (1b 37), "move" (1c 37) or "stop" (1a 37)
+    learned: bool = False  # from an opcode learned this session: to be checked against known positions
 
 
 @dataclass
@@ -410,12 +411,13 @@ class ServerStreamParser:
         import dataclasses
 
         self.op = dataclasses.replace(opcodes, moves=dict(opcodes.moves))  # learned moves stay with this parser
+        self._learned_moves: set[bytes] = set()
         self.diag = diag
         self.watch_id: int | None = None  # your entity: every packet about it goes to the self trace
         self._spawn_leads = {c[0] for c in opcodes.spawn}
         # opcode -> [packets seen, hits per skip 0..3]
         self._move_stats: dict[bytes, list[int]] = {}
-        self._not_moves = (
+        self._not_moves = {b"\x2a\x37"} | (  # 2a 37: seen live, not a position
             set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load)
             | set(opcodes.self_identity) | set(opcodes.object_spawn) | set(opcodes.player_spawn)
         )  # fmt: skip
@@ -488,7 +490,7 @@ class ServerStreamParser:
                     # A monster stepping 1.99 m every 1c 37 moved exactly along this yaw (206.0 deg, live).
                     yaw = struct.unpack_from("<H", packet, at + 12)[0] * 360.0 / 65536
                     phase = MOVE_PHASES[op]
-                events.append(EntityMove(eid, pos, vel, flags, yaw, phase))
+                events.append(EntityMove(eid, pos, vel, flags, yaw, phase, op in self._learned_moves))
             return
         if len(packet) <= LEARN_MOVE_MAX_LEN and op[1] in (0x36, 0x37, 0x38) and self._learn_move(op, packet, o):
             return
@@ -539,6 +541,7 @@ class ServerStreamParser:
             best = max(range(4), key=lambda k: st[1 + k])
             if st[1 + best] >= LEARN_MOVE_SHARE * st[0]:
                 self.op.moves[bytes(op)] = best
+                self._learned_moves.add(bytes(op))
                 if self.diag is not None:
                     self.diag.learned_moves[op.hex(" ")] = best
                 from .diag import log

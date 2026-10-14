@@ -259,8 +259,8 @@ class CubeDetector:
                     self._self_candidates.clear()  # a new zone: your entity is the one moving from here
                     self._set_self(event.pos, "teletransporte", t)
             elif isinstance(event, PlayerSpawn):
+                # Not excluded from being you: the zone load seems to spawn your own character this way too.
                 self._others.add(event.entity_id)
-                self._spawned_ids.add(event.entity_id)
                 if len(self._others) > 5000:
                     self._others.clear()
             elif isinstance(event, SelfIdentity):
@@ -334,20 +334,31 @@ class CubeDetector:
             e.pos = mv.pos
             e.last_seen = t
             return
-        if mv.entity_id in self._others or mv.entity_id in self._spawned_ids:
+        if mv.entity_id in self._spawned_ids:
             return
-        # Moving, yet never spawned as a monster, object, pet or player: most likely you.
-        # Moving where you just teleported counts much more.
+        if mv.flags == 0x05:
+            # Your own movement record: decisive, and it corrects an earlier wrong pick.
+            if self.self_id != mv.entity_id:
+                log.info("Tu entidad (flags 05): id %s", mv.entity_id)
+            self.self_id = mv.entity_id
+            self._self_candidates.clear()
+            self._set_self(mv.pos, "servidor", t)
+            if mv.velocity is not None:
+                self._self_vel = (t, mv.velocity[0], mv.velocity[1])
+            return
+        # Moving, yet never spawned as a monster, object or pet: maybe you. Moving where you just
+        # teleported counts much more, and so does the 05 flags byte, which in four live sessions only
+        # your own entity carried (pets and monsters 04, another player 01).
         score = 1
         if self._teleport is not None and t - self._teleport[1] <= SELF_MATCH_S:
             if distance_2d(mv.pos, self._teleport[0]) <= SELF_MATCH_UNITS:
-                score = 5
+                score += 2
         n = self._self_candidates.get(mv.entity_id, 0) + score
         self._self_candidates[mv.entity_id] = n
         ranked = sorted(self._self_candidates.values(), reverse=True)
         second = ranked[1] if len(ranked) > 1 else 0
         settled = self.self_id is not None and self.self_source == "servidor" and t - self._self_t < 10
-        if not settled and n == ranked[0] and n >= 6 and n >= 2 * second:
+        if not settled and n == ranked[0] and n >= 10 and n >= 2 * second:
             self.self_id = mv.entity_id
             log.info("Tu entidad: id %s", mv.entity_id)
             self._set_self(mv.pos, "servidor", t)

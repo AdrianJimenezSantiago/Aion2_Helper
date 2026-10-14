@@ -211,7 +211,7 @@ def test_teleport_gives_your_position_and_your_entity_is_learned():
     assert det.tracker.position == (100000.0, 50000.0, 3000.0) and det.self_source == "teletransporte"
     assert det.self_precise
     det.handle(EntityMove(4321, (100100.0, 50000.0, 3000.0)))  # near the teleport, not a spawned entity
-    det.handle(EntityMove(4321, (100250.0, 50050.0, 3000.0)))
+    det.handle(EntityMove(4321, (100250.0, 50050.0, 3000.0), flags=0x05))  # your own record
     assert det.self_id == 4321 and det.self_source == "servidor"
     clock.t += 30
     det.handle(EntityMove(4321, (120000.0, 60000.0, 3100.0)))
@@ -324,7 +324,8 @@ def test_live_session_finds_you_and_verteron():
     for e in events:
         det.handle(e)
     assert det.map_number == 1010
-    assert det.self_id == 36032 and det.self_source == "servidor"  # your entity: it moves where you landed
+    # 36032 moved beside you there, but later got a removal: not you. Two moves are not enough to say so.
+    assert det.self_id is None
 
 
 def test_spawns_in_a_bundle_inside_another_packet_are_read():
@@ -464,15 +465,21 @@ def test_other_players_are_never_taken_for_you():
 
     det, clock = _det()
     det.handle(ZoneChange((1000.0, 1000.0, 0.0)))
-    det.handle(PlayerSpawn(777))  # someone else stepping out of the same portal
-    for i in range(6):
+    det.handle(PlayerSpawn(777))  # someone else stepping out of the same portal (flags 01, as seen live)
+    det.handle(PlayerSpawn(2348))  # the zone load spawns your own character too
+    for i in range(3):
         clock.t += 0.3
-        det.handle(EntityMove(777, (1000.0 + i * 50, 1000.0, 0.0)))
+        det.handle(EntityMove(777, (1000.0 + i * 50, 1000.0, 0.0), flags=0x01))
     assert det.self_id is None
-    for i in range(2):
-        clock.t += 0.3
-        det.handle(EntityMove(2348, (1100.0 + i * 120, 1000.0, 0.0)))
+    clock.t += 0.3
+    det.handle(EntityMove(2348, (1100.0, 1000.0, 0.0), flags=0x05))  # yours: decisive at once
     assert det.self_id == 2348
+    for i in range(10):
+        clock.t += 0.1
+        det.handle(EntityMove(777, (1200.0 + i * 50, 1000.0, 0.0), flags=0x01))
+    assert det.self_id == 2348  # the other player never takes over
+    clock.t += 0.3
+    det.handle(EntityMove(2348, (1220.0, 1000.0, 0.0), flags=0x05))
     clock.t += 0.2
     v = det.snapshot().velocity
     assert v is not None and v[0] > 50 and abs(v[1]) < 1  # moving east
@@ -505,7 +512,9 @@ def test_live_pet_spawned_in_the_zone_bundle_is_not_you():
 
     det, clock = _det()
     det.handle(Spawn(30632, 0x5F, 2_990_000, (3000.0, 87500.0, 40700.0)))  # pet, before the teleport
-    stream = _live(LIVE4_TELEPORT) + _live(LIVE4_PET) + _live(LIVE4_SELF[0]) + _live(LIVE4_PET) + _live(LIVE4_SELF[1])
+    self_1b = "1a 1b 37 ae 3a 05 03 ca a3 40 45 f1 66 ad 47 3f 7a 1f 47 9f 7c 9f 7c"  # same session, flags 05
+    stream = (_live(LIVE4_TELEPORT) + _live(LIVE4_PET) + _live(LIVE4_SELF[0]) + _live(LIVE4_PET) + _live(self_1b)
+              + _live(LIVE4_SELF[1]))  # fmt: skip
     for e in ServerStreamParser().consume(stream)[0]:
         clock.t += 0.4
         det.handle(e)
@@ -513,3 +522,21 @@ def test_live_pet_spawned_in_the_zone_bundle_is_not_you():
     snap = det.snapshot()
     assert snap.velocity == (pytest_approx(-1541.1), pytest_approx(3.3))  # straight from the record
     assert EntityMove
+
+
+# Seventh live session: you are dd 3d (7901), 12.8 m from the teleport, flags 05.
+LIVE5_TELEPORT = "1e 23 36 00 00 00 00 00 00 ae 6a 26 45 36 86 aa 47 00 f1 1e 47 04 00 00 00 e0 35"
+LIVE5_SELF = "1a 1c 37 dd 3d 05 03 89 c6 58 45 91 75 ac 47 8f 8b 1f 47 7a f1 7a f1"
+LIVE5_PET = "19 1a 37 a8 ef 01 00 00 49 41 40 45 78 25 ab 47 00 11 1f 47 21 6e"
+
+
+def test_live_your_own_player_spawn_does_not_hide_you():
+    from aion2_helper.protocol import PlayerSpawn
+
+    det, clock = _det()
+    det.handle(PlayerSpawn(7901))
+    det.handle(Spawn(30632, 0x5F, 2_990_000, (3080.0, 87600.0, 40700.0)))  # the pet
+    for e in ServerStreamParser().consume(_live(LIVE5_TELEPORT) + _live(LIVE5_PET) + _live(LIVE5_SELF))[0]:
+        clock.t += 0.3
+        det.handle(e)
+    assert det.self_id == 7901 and det.self_source == "servidor"

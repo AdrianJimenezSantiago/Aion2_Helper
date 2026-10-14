@@ -227,6 +227,7 @@ class EntityMove:
     entity_id: int
     pos: Vec3
     velocity: Vec3 | None = None  # units (cm) per second, when the record carries it
+    flags: int | None = None  # the byte after the id in 1b 37 / 1c 37: 05 for your own entity (live)
 
 
 @dataclass
@@ -468,7 +469,8 @@ class ServerStreamParser:
             if found is not None and 1 <= eid <= MAX_ENTITY_ID:
                 pos, at = found
                 vel = _velocity(packet, at + 12) if op in self.op.velocity_moves else None
-                events.append(EntityMove(eid, pos, vel))
+                flags = packet[o + 2 + l1] if op in (b"\x1b\x37", b"\x1c\x37") and o + 2 + l1 < len(packet) else None
+                events.append(EntityMove(eid, pos, vel, flags))
             return
         if len(packet) <= LEARN_MOVE_MAX_LEN and op[1] in (0x36, 0x37, 0x38) and self._learn_move(op, packet, o):
             return

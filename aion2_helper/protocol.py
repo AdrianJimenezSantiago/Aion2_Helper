@@ -16,6 +16,9 @@ What is known comes from the open-source DPS meters that read the same stream
     1a 37 <id varint> <2 bytes> <x> <y> <z> ...      an entity moved
     1b 37 | 1c 37 <id varint> <flags> [<1 byte> if flags & 1] <x> <y> <z>   an entity moved; your
                                                      own entity too (flags 05 03), a few metres from you
+    29 37 <id varint> <2 bytes> <x> <y> <z> <vx> <vy> <vz> ...   a player moving, with its velocity
+                                                     (cm/s); yours too, which makes the radar glide
+    1f 37 <id varint> <flags> <x> <y> <z> ...        a player's position
     33 36 <id varint> ...                            your self record, at each map load
     34 36 <id varint> <kind u8> 00 <code u32> <x> <y> <z> ...   an object appeared: gathering
                                                      nodes (1500000 sat on an odyle node to 0.0 m),
@@ -223,6 +226,7 @@ class ZoneChange:
 class EntityMove:
     entity_id: int
     pos: Vec3
+    velocity: Vec3 | None = None  # units (cm) per second, when the record carries it
 
 
 @dataclass
@@ -251,6 +255,21 @@ LEARN_MOVE_SHARE = 0.85
 
 
 def _move_pos(packet: bytes, at: int, skip: int) -> Vec3 | None:
+    found = _move_pos_at(packet, at, skip)
+    return found[0] if found else None
+
+
+def _velocity(packet: bytes, at: int) -> Vec3 | None:
+    """Three floats right after a position, if they look like a speed (under 100 m/s)."""
+    if at + 12 > len(packet):
+        return None
+    v = struct.unpack_from("<fff", packet, at)
+    if all(math.isfinite(c) and abs(c) < 10000 for c in v):
+        return v
+    return None
+
+
+def _move_pos_at(packet: bytes, at: int, skip: int) -> tuple[Vec3, int] | None:
     """A movement record's position: at ``skip`` bytes past the id, or where its flags byte says
     (bit 0 set: one more byte before the position), or a byte either side."""
     tries = [skip]
@@ -264,7 +283,7 @@ def _move_pos(packet: bytes, at: int, skip: int) -> Vec3 | None:
         seen.add(k)
         pos = _read_pos(packet, at + k)
         if pos is not None and max(abs(pos[0]), abs(pos[1])) >= 100:
-            return pos
+            return pos, at + k
     return None
 
 
@@ -340,7 +359,11 @@ class Opcodes:
     signatures: list[bytes]
     map_load: list[bytes] = field(default_factory=lambda: [b"\x21\x36"])
     # Movement records: opcode -> bytes between the entity id and the position.
-    moves: dict[bytes, int] = field(default_factory=lambda: {b"\x1a\x37": 2, b"\x1b\x37": 1, b"\x1c\x37": 1})
+    moves: dict[bytes, int] = field(
+        default_factory=lambda: {b"\x1a\x37": 2, b"\x1b\x37": 1, b"\x1c\x37": 1, b"\x1f\x37": 1, b"\x29\x37": 2}
+    )
+    # Movement records followed by a velocity.
+    velocity_moves: list[bytes] = field(default_factory=lambda: [b"\x29\x37"])
     self_identity: list[bytes] = field(default_factory=lambda: [b"\x33\x36"])
     object_spawn: list[bytes] = field(default_factory=lambda: [b"\x34\x36"])
     player_spawn: list[bytes] = field(default_factory=lambda: [b"\x45\x36", b"\x44\x36"])
@@ -357,7 +380,11 @@ class Opcodes:
             zone_change=cls._parse(cfg.get("zone_change", ["23 36"])),
             signatures=cls._parse(cfg.get("signatures", ["0E 00 36", "06 00 36"])),
             map_load=cls._parse(cfg.get("map_load", ["21 36"])),
-            moves={bytes.fromhex(k): int(v) for k, v in cfg.get("moves", {"1A 37": 2, "1B 37": 1, "1C 37": 1}).items()},
+            moves={
+                bytes.fromhex(k): int(v)
+                for k, v in cfg.get("moves", {"1A 37": 2, "1B 37": 1, "1C 37": 1, "1F 37": 1, "29 37": 2}).items()
+            },
+            velocity_moves=cls._parse(cfg.get("velocity_moves", ["29 37"])),
             self_identity=cls._parse(cfg.get("self_identity", ["33 36"])),
             object_spawn=cls._parse(cfg.get("object_spawn", ["34 36"])),
             player_spawn=cls._parse(cfg.get("player_spawn", ["45 36", "44 36"])),
@@ -437,9 +464,11 @@ class ServerStreamParser:
                     return
         if op in self.op.moves:
             eid, l1 = read_varint(packet, o + 2)
-            pos = _move_pos(packet, o + 2 + l1, self.op.moves[op]) if l1 > 0 else None
-            if pos is not None and 1 <= eid <= MAX_ENTITY_ID:
-                events.append(EntityMove(eid, pos))
+            found = _move_pos_at(packet, o + 2 + l1, self.op.moves[op]) if l1 > 0 else None
+            if found is not None and 1 <= eid <= MAX_ENTITY_ID:
+                pos, at = found
+                vel = _velocity(packet, at + 12) if op in self.op.velocity_moves else None
+                events.append(EntityMove(eid, pos, vel))
             return
         if len(packet) <= LEARN_MOVE_MAX_LEN and op[1] in (0x36, 0x37, 0x38) and self._learn_move(op, packet, o):
             return

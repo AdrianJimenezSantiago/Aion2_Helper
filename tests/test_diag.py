@@ -423,13 +423,13 @@ def test_unknown_movement_opcode_is_learned():
 
     stream = b""
     for i in range(20):
-        stream += frame(b"\x29\x37" + encode_varint(500 + i) + b"\x03" + struct.pack("<fff", 1000.0 + i, -2000.0, 300.0) + b"\x01\x02")
+        stream += frame(b"\x2e\x37" + encode_varint(500 + i) + b"\x03" + struct.pack("<fff", 1000.0 + i, -2000.0, 300.0) + b"\x01\x02")
     det = CubeDetector(Config(None))
     events, _ = ServerStreamParser(DEFAULT_OPCODES, det.diag).consume(stream)
     moves = [e for e in events if isinstance(e, EntityMove)]
-    assert det.diag.learned_moves == {"29 37": 1}
+    assert det.diag.learned_moves == {"2e 37": 1}
     assert len(moves) >= 7 and moves[-1].pos == (1019.0, -2000.0, 300.0)
-    assert b"\x29\x37" not in DEFAULT_OPCODES.moves  # learned per parser, not globally
+    assert b"\x2e\x37" not in DEFAULT_OPCODES.moves  # learned per parser, not globally
 
 
 def test_noise_opcode_is_not_learned_as_movement():
@@ -479,3 +479,37 @@ def test_other_players_are_never_taken_for_you():
     clock.t += 0.3
     det.handle(EntityMove(2348, (1400.0, 1000.0, 0.0)))  # the next report of yours
     assert det.snapshot().heading_deg == pytest_approx(90.0)
+
+
+# Fourth live session: you are ae 3a (7470), your pet a8 ef 01 (30632) walks beside you.
+LIVE4_TELEPORT = "1e 23 36 00 00 00 00 00 00 ae 6a 26 45 36 c6 aa 47 00 ee 1e 47 04 00 00 00 95 30"
+LIVE4_SELF = [
+    "18 1a 37 ae 3a 00 00 6c 7b 27 45 8e a3 ad 47 00 71 1f 47 6b 6e",
+    "24 29 37 ae 3a 03 03 5e 0c 7a 45 43 3d ad 47 2a e9 1f 47 6c a3 c0 c4 14 c0 51 40 b7 0b d7 43 de 7f",
+]
+LIVE4_PET = "1b 1b 37 a8 ef 01 04 57 ba 40 45 e0 25 ab 47 00 11 1f 47 b7 de b7 de 01"
+
+
+def test_live_29_37_carries_your_velocity():
+    import pytest
+
+    events, _ = ServerStreamParser().consume(_live(LIVE4_SELF[1]))
+    (mv,) = events
+    assert mv.entity_id == 7470
+    assert mv.pos == pytest.approx((4000.8, 88698.5, 40937.2), abs=0.2)
+    assert mv.velocity == pytest.approx((-1541.1, 3.3, 430.1), abs=0.2)
+
+
+def test_live_pet_spawned_in_the_zone_bundle_is_not_you():
+    from aion2_helper.protocol import EntityMove
+
+    det, clock = _det()
+    det.handle(Spawn(30632, 0x5F, 2_990_000, (3000.0, 87500.0, 40700.0)))  # pet, before the teleport
+    stream = _live(LIVE4_TELEPORT) + _live(LIVE4_PET) + _live(LIVE4_SELF[0]) + _live(LIVE4_PET) + _live(LIVE4_SELF[1])
+    for e in ServerStreamParser().consume(stream)[0]:
+        clock.t += 0.4
+        det.handle(e)
+    assert det.self_id == 7470 and det.self_source == "servidor"
+    snap = det.snapshot()
+    assert snap.velocity == (pytest_approx(-1541.1), pytest_approx(3.3))  # straight from the record
+    assert EntityMove

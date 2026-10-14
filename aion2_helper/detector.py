@@ -131,6 +131,10 @@ class CubeDetector:
         self._self_candidates: dict[int, int] = {}
         self._self_hint: int | None = None
         self._others: set[int] = set()  # other players: never you
+        # Every id that ever spawned on this connection (monsters, objects, pets, players): never you.
+        # Not cleared at a zone change, whose bundle can carry your pet's spawn just before it.
+        self._spawned_ids: set[int] = set()
+        self._self_vel: tuple[float, float, float] | None = None
         self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
 
     @property
@@ -256,6 +260,7 @@ class CubeDetector:
                     self._set_self(event.pos, "teletransporte", t)
             elif isinstance(event, PlayerSpawn):
                 self._others.add(event.entity_id)
+                self._spawned_ids.add(event.entity_id)
                 if len(self._others) > 5000:
                     self._others.clear()
             elif isinstance(event, SelfIdentity):
@@ -287,7 +292,10 @@ class CubeDetector:
             self.tracker.add_anchor(pos)  # where the client must report you, too
 
     def velocity(self, now: float) -> tuple[float, float] | None:
-        """Your speed (units/s) from the last two reports, if recent: lets the radar glide between them."""
+        """Your speed (units/s): the one your own 29 37 record carries if fresh, else from the last
+        two reports. Lets the radar glide between them."""
+        if self._self_vel is not None and now - self._self_vel[0] <= 1.5:
+            return self._self_vel[1], self._self_vel[2]
         if len(self._trail) < 2:
             return None
         (t1, a), (t2, b) = self._trail[-2], self._trail[-1]
@@ -316,6 +324,8 @@ class CubeDetector:
         if mv.entity_id == self.self_id or (self.self_id is None and mv.entity_id == self._self_hint):
             self.diag.count("self_moves")
             self._set_self(mv.pos, "servidor", t)
+            if mv.velocity is not None:
+                self._self_vel = (t, mv.velocity[0], mv.velocity[1])
             return
         self.diag.count("moves")
         self._recent.append((t, mv.pos))
@@ -324,7 +334,7 @@ class CubeDetector:
             e.pos = mv.pos
             e.last_seen = t
             return
-        if mv.entity_id in self._others:
+        if mv.entity_id in self._others or mv.entity_id in self._spawned_ids:
             return
         # Moving, yet never spawned as a monster, object, pet or player: most likely you.
         # Moving where you just teleported counts much more.
@@ -341,6 +351,8 @@ class CubeDetector:
             self.self_id = mv.entity_id
             log.info("Tu entidad: id %s", mv.entity_id)
             self._set_self(mv.pos, "servidor", t)
+            if mv.velocity is not None:
+                self._self_vel = (t, mv.velocity[0], mv.velocity[1])
 
     def _map_load(self, number: int, t: float) -> None:
         self.diag.count("map_loads")
@@ -386,11 +398,17 @@ class CubeDetector:
             self.handle(ZoneChange(), t)
             self.map_number = None
             self.self_id = None
+            self._spawned_ids.clear()
+            self._others.clear()
             if self.locator:
                 self.locator.reset()
                 self.world_status = f"{self.world.cube_count} spots de {self.world.source} · buscando mapa"
 
     def _spawn(self, sp: Spawn, t: float) -> None:
+        if sp.entity_id != self.self_id:
+            self._spawned_ids.add(sp.entity_id)
+            if len(self._spawned_ids) > 50000:
+                self._spawned_ids.clear()
         old = self._entities.get(sp.entity_id)
         e = Entity(sp.entity_id, sp.code, sp.kind, sp.pos, old.first_seen if old else t, t)
         self._entities[sp.entity_id] = e

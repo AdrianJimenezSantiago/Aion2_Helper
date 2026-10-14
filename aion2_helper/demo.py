@@ -1,4 +1,7 @@
-"""A made-up session to see the overlay without the game: you walk, cubes appear and vanish."""
+"""A made-up session to see the overlay without the game: you walk, cubes appear and vanish.
+
+It also installs a made-up map of cube spots so the "next spot" guide can be seen.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ import time
 
 from .detector import CubeDetector
 from .protocol import Despawn, Spawn
+from .worldmap import MAPS, WorldData
 
 DEMO_CUBE_CODE = 9_990_001
 
@@ -20,6 +24,17 @@ def run(detector: CubeDetector, stop: threading.Event) -> None:
     tracker.fixed_key = (b"\x00\x00", 0)  # pretend it was learned
     detector.status = "DEMO (datos inventados)"
     origin = (74914.0, -84788.0, 8853.0)
+    rng = random.Random(7)
+    spots = [
+        [origin[0] + d * math.cos(a), origin[1] + d * math.sin(a), origin[2]]
+        for a, d in ((rng.uniform(0, 2 * math.pi), rng.uniform(800, 6000)) for _ in range(40))
+    ]
+    MAPS.setdefault("DEMO", ("Mapa de demostración", "key"))
+    detector.config["world_transform"] = "xy"
+    detector.set_world(WorldData.from_dataset({"source": "demo", "maps": {"DEMO": {"cubes": spots, "anchors": []}}}))
+    detector.locator.map_id = "DEMO"
+    detector.world_status = f"Mapa: Mapa de demostración ({len(spots)} spots inventados)"
+    detector.config["cube_kinds"] = {str(DEMO_CUBE_CODE): "key"}
     next_id = 50_000
     alive: list[int] = []
     t0 = time.time()
@@ -28,9 +43,12 @@ def run(detector: CubeDetector, stop: threading.Event) -> None:
         me = (origin[0] + 2500 * math.cos(t / 20), origin[1] + 2500 * math.sin(t / 20), origin[2])
         tracker.position = me
         if random.random() < 0.08:
-            a, d = random.uniform(0, 2 * math.pi), random.uniform(500, 5000)
-            pos = (me[0] + d * math.cos(a), me[1] + d * math.sin(a), me[2])
-            code = DEMO_CUBE_CODE if random.random() < 0.3 else random.choice([2920548, 2000002, 2000004])
+            if random.random() < 0.3:
+                code, pos = DEMO_CUBE_CODE, tuple(random.choice(spots))
+            else:
+                a, d = random.uniform(0, 2 * math.pi), random.uniform(500, 5000)
+                pos = (me[0] + d * math.cos(a), me[1] + d * math.sin(a), me[2])
+                code = random.choice([2920548, 2000002, 2000004])
             detector.handle(Spawn(next_id, 0x0C, code, pos))
             alive.append(next_id)
             next_id += 1

@@ -1,4 +1,4 @@
-"""Command line: ``python -m aion2_helper [run|replay|analyze|import-spots|ifaces]``."""
+"""Command line: ``python -m aion2_helper [run|replay|analyze|update-spots|import-spots|ifaces]``."""
 
 from __future__ import annotations
 
@@ -23,6 +23,35 @@ def _detector(cfg: Config, log: Path | None, overlay_ref: list):
         discovery_log=log,
         spots=spots,
     )
+
+
+def _load_world(cfg: Config, detector, update: bool = True) -> None:
+    """Loads the community spots, and refreshes them in the background when missing or old."""
+    from . import community
+    from .worldmap import WorldData
+
+    path = community.dataset_path(cfg.path)
+    data = community.load(path)
+    if data:
+        detector.set_world(WorldData.from_dataset(data))
+    opts = cfg["community"]
+    if not update or not opts.get("auto_update", True):
+        return
+    if data and community.age_days(data) < opts.get("max_age_days", 7):
+        return
+
+    def fetch():
+        if not data:
+            detector.world_status = f"Descargando spots de {community.SOURCE}…"
+        try:
+            fresh = community.download(log=lambda m: None)
+            community.save(fresh, path)
+            detector.set_world(WorldData.from_dataset(fresh))
+        except Exception as exc:
+            if not data:
+                detector.world_status = f"Sin spots de la comunidad ({exc.__class__.__name__}); prueba 'update-spots'"
+
+    threading.Thread(target=fetch, daemon=True).start()
 
 
 def _log_path(args, cfg: Config) -> Path | None:
@@ -51,6 +80,7 @@ def cmd_run(args) -> int:
 
         threading.Thread(target=demo.run, args=(detector, stop), daemon=True).start()
     else:
+        _load_world(cfg, detector, update=not args.replay)
         dispatcher = Dispatcher(detector, Opcodes.from_config(cfg["opcodes"]), recorder)
         if args.replay:
             def go():
@@ -103,6 +133,7 @@ def cmd_run(args) -> int:
     overlay = Overlay(detector, on_close=shutdown)
     overlay.discovery = args.discovery
     overlay_ref.append(overlay)
+    detector.on_learned = overlay.learned
     hk = start_hotkeys(overlay, cfg["hotkeys"])
     if hk is None:
         print("Atajos globales desactivados (instala 'pynput'). Clic derecho en el overlay para cerrar.")
@@ -111,9 +142,33 @@ def cmd_run(args) -> int:
 
 
 def cmd_analyze(args) -> int:
+    from . import community
     from .analyze import main
+    from .worldmap import WorldData
 
-    main(Path(args.log), args.top)
+    cfg = Config.load(Path(args.config) if args.config else None)
+    data = community.load(community.dataset_path(cfg.path))
+    main(Path(args.log), args.top, WorldData.from_dataset(data) if data else None)
+    return 0
+
+
+def cmd_update_spots(args) -> int:
+    from . import community
+
+    cfg = Config.load(Path(args.config) if args.config else None)
+    path = community.dataset_path(cfg.path)
+    try:
+        if args.source:
+            data = community.import_dir(Path(args.source))
+        else:
+            print(f"Descargando los spots de {community.SOURCE}…")
+            data = community.download()
+    except Exception as exc:
+        print(f"Error: {exc}")
+        return 1
+    community.save(data, path)
+    print("\n".join(community.summary(data)))
+    print(f"Guardado en {path}")
     return 0
 
 
@@ -159,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
     an = sub.add_parser("analyze", help="busca el código del cubo en un registro de descubrimiento")
     an.add_argument("log")
     an.add_argument("--top", type=int, default=10)
+    up = sub.add_parser("update-spots", help="descarga los spots de Hidden Cube de aion2.th.gl")
+    up.add_argument("--from", dest="source", help="carpeta con ficheros World_*.raw descargados a mano")
     im = sub.add_parser("import-spots", help="importa spots (CSV x,y,z o JSON) en coordenadas del mundo")
     im.add_argument("file")
     sub.add_parser("ifaces", help="lista las interfaces de red")
@@ -168,7 +225,13 @@ def main(argv: list[str] | None = None) -> int:
         args.replay = args.pcap
     if args.cmd in (None, "run", "replay"):
         return cmd_run(args)
-    return {"analyze": cmd_analyze, "import-spots": cmd_import, "ifaces": cmd_ifaces}[args.cmd](args)
+    commands = {
+        "analyze": cmd_analyze,
+        "update-spots": cmd_update_spots,
+        "import-spots": cmd_import,
+        "ifaces": cmd_ifaces,
+    }
+    return commands[args.cmd](args)
 
 
 if __name__ == "__main__":

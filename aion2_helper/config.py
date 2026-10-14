@@ -9,9 +9,23 @@ import sys
 from pathlib import Path
 
 DEFAULTS: dict = {
-    # NPC codes (decimal) of the Hidden Cube objects. Empty until calibrated: stand by a cube
-    # and press the "tag" hotkey, or run `python -m aion2_helper analyze`. See the README.
+    # NPC codes (decimal) of the Hidden Cube objects. Learned by themselves from the community
+    # spots (see "auto_cube_codes"); the "tag" hotkey and `analyze` still work. See the README.
     "cube_codes": [],
+    # Codes whose entities keep appearing on known cube spots are added to cube_codes.
+    "auto_cube_codes": True,
+    # Evidence gathered so far for that (filled in by the program).
+    "cube_candidates": {},
+    # "key" or "free" per code (as a string). Codes seen on a key-only map are filled in as "key".
+    "cube_kinds": {},
+    # Community spots (aion2.th.gl): downloaded at start-up when missing or older than this.
+    "community": {"auto_update": True, "max_age_days": 7},
+    # Axis convention between packets and community data; found by itself (expected "xy").
+    "world_transform": None,
+    # A known spot you come this close to without a cube on it counts as checked (refined by itself) ...
+    "spot_check_radius_m": 40,
+    # ... and is shown as pending again after this many seconds.
+    "spot_recheck_s": 1800,
     # Codes never shown in the discovery list (mobs you keep seeing and know are not cubes).
     "ignore_codes": [],
     "opcodes": {
@@ -39,6 +53,7 @@ DEFAULTS: dict = {
         "click_through": "<f10>",
         "toggle_overlay": "<f11>",
         "discovery": "<f7>",
+        "reset_spots": "<f6>",
     },
 }
 

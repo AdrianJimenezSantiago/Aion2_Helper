@@ -158,6 +158,7 @@ class Dispatcher:
         self._down = TcpStream(self._consume_down)
         self._up = TcpStream(self._consume_up)
         self.detector.status = f"Conectado al juego ({seg.src}:{seg.sport})"
+        self.detector.new_connection(seg.t)
         self._down.add(seg.seq, seg.data, seg.t)
 
     def reset(self) -> None:

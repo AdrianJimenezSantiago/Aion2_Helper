@@ -16,17 +16,30 @@ from typing import Callable
 
 from .detector import CubeDetector, EntityView, Snapshot
 
-W, H = 300, 450
+W, H = 300, 540
 RADAR = 250
 BG = "#101418"
 FG = "#d8dee9"
 DIM = "#6b7685"
-CUBE = "#ffd34d"
+KEY_CUBE = "#ff5c5c"
+FREE_CUBE = "#ffd34d"
+UNKNOWN_CUBE = "#ffa64d"
 SPOT = "#4d9fff"
+SPOT_NEXT = "#9fd0ff"
+SPOT_DONE = "#3a4654"
 OTHER = "#7a8899"
 ALERT = "#ff8c1a"
 
 COMPASS = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"]
+RULES = {
+    "key": "Todos los cubos de este mapa necesitan llave",
+    "mixed": "Cubos gratis, o con llave para mejor botín",
+}
+KIND_LABEL = {"key": "llave", "free": "gratis", None: ""}
+
+
+def cube_color(kind: str | None) -> str:
+    return {"key": KEY_CUBE, "free": FREE_CUBE}.get(kind, UNKNOWN_CUBE)
 
 
 def compass(deg: float) -> str:
@@ -96,6 +109,9 @@ class Overlay:
     def alert(self) -> None:
         self._actions.put("alert")
 
+    def learned(self, code: int) -> None:
+        self._actions.put("learned")
+
     # ───── ui thread ─────
 
     def run(self) -> None:
@@ -134,6 +150,11 @@ class Overlay:
         elif action == "toggle_overlay":
             self._visible = not self._visible
             (self.root.deiconify if self._visible else self.root.withdraw)()
+        elif action == "reset_spots":
+            n = self.detector.reset_spots()
+            self._flash(f"{n} spots vuelven a estar por revisar")
+        elif action == "learned":
+            self._flash("Código del Hidden Cube aprendido solo", 6)
         elif action == "discovery":
             self.discovery = not self.discovery
             self._flash("Modo descubrimiento " + ("ON" if self.discovery else "OFF"))
@@ -157,22 +178,36 @@ class Overlay:
     def _render(self, snap: Snapshot) -> None:
         now = self.detector.clock()
         n = len(snap.cubes)
-        self.header.configure(
-            text=f"Hidden Cubes cerca: {n}" if self.config["cube_codes"] else "Hidden Cubes: sin calibrar (ver README)",
-            fg=CUBE if n else FG,
-        )
+        calibrated = bool(self.config["cube_codes"]) or n > 0
+        where = f"{snap.map_name} · " if snap.map_name else ""
+        if calibrated:
+            title = f"{where}Hidden Cubes cerca: {n}"
+        elif self.detector.world is not None:
+            title = f"{where}Hidden Cubes: aprendiendo el código…"
+        else:
+            title = "Hidden Cubes: sin calibrar (ver README)"
+        color = cube_color(snap.cubes[0].kind) if n else FG
+        self.header.configure(text=title, fg=color)
         pos = "aprendida" if snap.self_learned else "aprendiendo…"
-        lines = [snap.status, f"Posición propia: {pos} · entidades: {snap.entity_count}"]
+        lines = [snap.status, snap.world, f"Posición propia: {pos} · entidades: {snap.entity_count}"]
+        if snap.cube_rule in RULES:
+            lines.append(RULES[snap.cube_rule])
         if now < self._message_until:
             lines.append(self._message)
-        self.status.configure(text="\n".join(lines))
+        self.status.configure(text="\n".join(l for l in lines if l))
         border = ALERT if now < self._alert_until and int(now * 4) % 2 == 0 else BG
         self.canvas.configure(highlightbackground=border)
         self._draw_radar(snap)
 
         rows = []
-        for v in snap.cubes[:6]:
+        for v in snap.cubes[:5]:
             rows.append("◆ " + self._describe(v))
+        if snap.next_spot is not None and snap.next_spot.distance_m is not None:
+            ns = snap.next_spot
+            rows.append(
+                f"→ siguiente: {ns.distance_m:.0f} m {compass(self._screen_bearing(ns.bearing_deg))}"
+                f" · {snap.pending_near} pendientes"
+            )
         if self.discovery:
             rows.append("── cerca (F9 = es un cubo) ──")
             for v in snap.nearby:
@@ -189,6 +224,8 @@ class Overlay:
             parts.append(f"{v.distance_m:5.0f} m {compass(self._screen_bearing(v.bearing_deg)):>2}")
         else:
             parts.append("dist. ?")
+        if v.is_cube and KIND_LABEL.get(v.kind):
+            parts.append(KIND_LABEL[v.kind])
         parts.append(f"hace {int(v.age_s)}s")
         return "  ".join(parts)
 
@@ -222,9 +259,22 @@ class Overlay:
             return cx + rr * math.sin(a), cy - rr * math.cos(a), clipped
 
         for s in snap.spots:
-            x, y, clipped = plot(s[0], s[1])
-            if not clipped:
+            if s.status == "cube":
+                continue  # drawn as a cube below
+            x, y, clipped = plot(s.pos[0], s.pos[1])
+            if clipped:
+                continue
+            if s.status == "empty":
+                c.create_oval(x - 2, y - 2, x + 2, y + 2, fill=SPOT_DONE, outline="")
+            else:
                 c.create_oval(x - 3, y - 3, x + 3, y + 3, outline=SPOT)
+        ns = snap.next_spot
+        if ns is not None:
+            x, y, clipped = plot(ns.pos[0], ns.pos[1])
+            if clipped:
+                c.create_line(cx, cy, x, y, fill=SPOT_NEXT, dash=(3, 3), arrow="last")
+            else:
+                c.create_oval(x - 5, y - 5, x + 5, y + 5, outline=SPOT_NEXT, width=2)
         if self.discovery:
             for v in snap.nearby:
                 if v.entity.pos is not None:
@@ -236,8 +286,9 @@ class Overlay:
                 continue
             x, y, clipped = plot(v.entity.pos[0], v.entity.pos[1])
             size = 4 if clipped else 6
-            c.create_polygon(x, y - size, x + size, y, x, y + size, x - size, y, fill=CUBE, outline="")
-            c.create_text(x, y + 12, text=f"{v.distance_m:.0f}m", fill=CUBE, font=("Segoe UI", 8))
+            col = cube_color(v.kind)
+            c.create_polygon(x, y - size, x + size, y, x, y + size, x - size, y, fill=col, outline="")
+            c.create_text(x, y + 12, text=f"{v.distance_m:.0f}m", fill=col, font=("Segoe UI", 8))
 
     # ───── window plumbing ─────
 

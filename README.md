@@ -1,17 +1,34 @@
 # Aion2 Helper: radar de Hidden Cubes
 
 Overlay **de uso personal** para AION 2 que avisa (con sonido y un radar) cuando aparece un
-**Hidden Cube** cerca de tu personaje, y te dice a cuántos metros y en qué dirección está.
+**Hidden Cube** cerca de tu personaje, y te dice a cuántos metros y en qué dirección está. Además te
+guía por los 3 722 spots posibles de los cubos (los rojos que piden llave y los dorados gratuitos) y
+tacha los que ya has revisado.
+
+![Overlay en modo demo](docs/overlay-demo.png)
 
 > ⚠️ Usar herramientas de terceros puede ir contra los términos de servicio de AION 2. El proyecto
 > no tiene relación con NCSOFT. Úsalo bajo tu responsabilidad.
 
 ## Cómo funciona
 
-Los cubos rotan entre miles de spots posibles (unos 2 800 en Verteron y Altgard según los mapas
-comunitarios), así que un mapa estático no te dice dónde está el cubo *ahora*. El servidor, en cambio,
-solo envía al cliente las entidades que tienes cerca. Cuando un cubo entra en tu radio de visión, el
-servidor manda su registro de "spawn", y la herramienta lo lee.
+Los cubos rotan entre miles de spots posibles: 1 440 en Verteron, 1 371 en Altgard, 456 en Eltnen y
+455 en Morheim. Un mapa estático no te dice dónde está el cubo *ahora*. El servidor, en cambio, solo
+envía al cliente las entidades que tienes cerca. Cuando un cubo entra en tu radio de visión, el servidor
+manda su registro de "spawn", y la herramienta lo lee.
+
+Los spots se descargan de [aion2.th.gl](https://aion2.th.gl/guides/Hidden%20Cube), que los extrae de
+los ficheros del juego en las mismas coordenadas que envía el servidor. Con ellos la herramienta:
+
+- **sabe en qué mapa estás**, porque las entidades que te rodean caen sobre los puntos fijos de ese mapa;
+- **aprende sola el código del cubo**: el código cuyas entidades aparecen justo encima de spots
+  conocidos. Ya no hace falta calibrar;
+- te muestra los **spots pendientes** cercanos, tacha los que ya revisaste y te indica el siguiente;
+- distingue los cubos **con llave** (rojos; todos en Verteron y Altgard) de los **gratuitos** y muestra
+  la regla del mapa.
+
+La investigación completa sobre las webs de la comunidad y su formato de datos está en
+[docs/INVESTIGACION_CUBOS.md](docs/INVESTIGACION_CUBOS.md).
 
 Usa la misma técnica que los DPS meters open source del juego
 ([A2Tools](https://github.com/taengu/A2Tools-DPS-Meter),
@@ -51,10 +68,17 @@ pero sin distancia ni flecha.
 
 Para ver el overlay sin el juego: `python -m aion2_helper --demo --discovery`.
 
-## Calibración (una sola vez)
+La primera vez que arranca descarga los spots de aion2.th.gl (unos 400 KB) y los renueva cada 7 días.
+Si no hay conexión, ejecuta más tarde `python -m aion2_helper update-spots`.
 
-Nadie ha publicado el código NPC del Hidden Cube, así que hay que enseñárselo a la herramienta la
-primera vez:
+## Calibración: automática
+
+No hay que hacer nada: juega normalmente. En cuanto veas un cubo, la herramienta lo reconoce porque está
+sobre un spot conocido, avisa y, con el segundo, guarda su código en `cube_codes`. El overlay muestra
+"Código del Hidden Cube aprendido solo". En Verteron y Altgard el código queda marcado como cubo con
+llave.
+
+Si quieres hacerlo a mano (por ejemplo, sin los spots descargados):
 
 **Forma rápida:**
 1. Arranca en modo descubrimiento: `python -m aion2_helper --discovery --log`
@@ -71,12 +95,15 @@ primera vez:
    ```
 3. Copia el código con mejor puntuación en `cube_codes` de `%APPDATA%\Aion2Helper\config.json`.
 
-Pueden existir dos códigos (cubo normal y cubo con llave). Si es así, marca uno de cada.
+Pueden existir varios códigos (cubo con llave, cubo gratuito y versión submarina). Con los spots
+descargados, `analyze` los ordena solo, sin marcas F8. Para colorear un código como gratuito, pon
+`"cube_kinds": {"1234567": "free"}` en la configuración.
 
 ## Atajos (configurables en `config.json`)
 
 | Tecla | Acción |
 |---|---|
+| F6 | Vuelve a poner todos los spots como pendientes (por ejemplo, al cambiar de canal) |
 | F7 | Modo descubrimiento: muestra las entidades cercanas con su código |
 | F8 | Marca "aquí hay un cubo" en el registro (para `analyze`) |
 | F9 | La entidad más cercana es un cubo: guarda su código |
@@ -85,17 +112,30 @@ Pueden existir dos códigos (cubo normal y cubo con llave). Si es así, marca un
 
 Arrastra el overlay con el ratón para moverlo; con **clic derecho** se cierra.
 
-## Spots conocidos
+## Spots
 
-Cada cubo detectado se guarda en `%APPDATA%\Aion2Helper\spots.json`, y el radar muestra en azul los
-spots conocidos cercanos, aunque ahora estén vacíos, para que puedas repasarlos.
-`python -m aion2_helper import-spots fichero.csv` importa spots en **coordenadas del mundo**
-(`x,y,z`). Las coordenadas de los mapas web ([aion2.th.gl](https://aion2.th.gl/guides/Hidden%20Cube),
-[metabot.gg](https://metabot.gg/en/aion-2/hidden-cubes),
-[aion2atlas](https://aion2atlas.app/map/hidden-cube/),
-[interactivemap.app](https://interactivemap.app/aion2/maps/verteron/hidden-cube),
-[Game8](https://game8.co/games/Aion-2/archives/622610)) están en píxeles de mapa y hay que
-convertirlas antes.
+En el radar:
+
+| Símbolo | Significado |
+|---|---|
+| ◆ rojo | Hidden Cube que necesita llave |
+| ◆ dorado | Hidden Cube gratuito (`cube_kinds`) |
+| ◆ naranja | Hidden Cube de tipo desconocido |
+| ○ azul | Spot por revisar |
+| · gris | Spot revisado: pasaste cerca y estaba vacío. Vuelve a azul a los 30 min (`spot_recheck_s`) |
+| ◎ azul claro / flecha | Siguiente spot pendiente más cercano |
+
+Un spot cuenta como revisado cuando pasas a menos de 40 m (`spot_check_radius_m`). La herramienta ajusta
+ese radio sola según la distancia a la que te van apareciendo los cubos.
+
+`python -m aion2_helper update-spots` descarga los spots al momento. Si la descarga falla (proxy,
+firewall...), baja a mano los ficheros `World_*.raw` de `https://cdn.th.gl/aion2/nodes/` (los nombres
+actuales aparecen como `nodesPaths` en el código fuente de <https://aion2.th.gl/maps/Verteron>) y usa
+`update-spots --from carpeta`.
+
+Además, cada cubo detectado se guarda en `%APPDATA%\Aion2Helper\spots.json`. Esos spots propios se
+muestran mientras no se reconoce el mapa. `python -m aion2_helper import-spots fichero.csv` añade spots
+en **coordenadas del mundo** (`x,y,z`).
 
 ## Opciones
 
@@ -103,6 +143,7 @@ convertirlas antes.
 python -m aion2_helper [--discovery] [--log [ruta]] [--record juego.pcap] [--iface NOMBRE|all]
 python -m aion2_helper replay juego.pcap [--fast] [--headless]
 python -m aion2_helper analyze registro.jsonl
+python -m aion2_helper update-spots [--from carpeta]
 python -m aion2_helper import-spots spots.csv
 python -m aion2_helper ifaces
 ```
@@ -124,8 +165,12 @@ en `config.json`:
 Mira qué cambian los DPS meters citados arriba y copia sus valores. Si la posición propia se aprende
 mal, borra `"self_position"` (déjalo en `null`) para que se vuelva a aprender.
 
+Si el mapa no se reconoce nunca ("buscando mapa"), borra `"world_transform"` (déjalo en `null`) y
+ejecuta `update-spots`.
+
 Otros ajustes: `radar_range_m`, `radar_rotation_deg` y `radar_mirror` (si el norte del radar no
-coincide con el del mapa), `cube_ttl_s`, `sound` y `overlay.alpha`.
+coincide con el del mapa), `cube_ttl_s`, `sound`, `overlay.alpha`, `auto_cube_codes` (desactiva el
+aprendizaje automático), `community.auto_update` y `community.max_age_days`.
 
 ## Desarrollo
 
@@ -142,6 +187,9 @@ pytest
 | `aion2_helper/detector.py` | Estado del mundo y cubos activos |
 | `aion2_helper/overlay.py` | Overlay tkinter y atajos globales |
 | `aion2_helper/analyze.py` | Ranking de códigos a partir de las marcas F8 |
-| `aion2_helper/spots.py` | Spots conocidos |
+| `aion2_helper/spots.py` | Spots vistos por ti |
+| `aion2_helper/community.py` | Descarga y conversión de los spots de aion2.th.gl |
+| `aion2_helper/cborx.py` | Decodificador CBOR con las extensiones de cbor-x (formato de th.gl) |
+| `aion2_helper/worldmap.py` | Índice de spots, detección de mapa, aprendizaje del código, spots revisados |
 
 Los tests usan bytes reales de una captura del 6 de octubre de 2026 publicados en los tests de A2Tools.

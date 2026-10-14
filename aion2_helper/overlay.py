@@ -274,7 +274,7 @@ class Overlay:
         return math.hypot(pos[0] - me[0], pos[1] - me[1]) / self.config["units_per_meter"], bearing(me, pos)
 
     def _display_me(self, snap: Snapshot, now: float) -> Vec3 | None:
-        """Your drawn position: the last report carried forward at your speed (up to 1.5 s),
+        """Your drawn position: the last report carried forward at your speed (up to 3 s),
         approached smoothly so the radar glides instead of jumping between reports."""
         me = snap.self_pos
         if me is None:
@@ -282,7 +282,7 @@ class Overlay:
             return None
         target = me
         if snap.velocity is not None and snap.pos_time:
-            dt = min(max(0.0, now - snap.pos_time), 1.5)
+            dt = min(max(0.0, now - snap.pos_time), 3.0)
             target = (me[0] + snap.velocity[0] * dt, me[1] + snap.velocity[1] * dt, me[2])
         d = self._disp_me
         if d is None or not self.animations or math.hypot(target[0] - d[0], target[1] - d[1]) > 3000:

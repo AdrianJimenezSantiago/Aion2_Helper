@@ -46,8 +46,9 @@ Usa la misma técnica que los DPS meters open source del juego
   posición exacta.
 - `21 36 <u32> <u32 id de mapa> <8 bytes> <x> <y> <z>`: carga de mapa (1010 = Verteron) y tu posición.
   La herramienta aprende qué id corresponde a cada mapa.
-- `1a 37 <id> <2 bytes> <x> <y> <z>` y `1b 37` / `1c 37 <id> <flags> [1 byte si flags & 1] <x> <y> <z>`:
-  una entidad se mueve, también tú. Tu entidad se reconoce porque se mueve justo donde te
+- `1a 37 <id> <2 bytes> <x> <y> <z> <yaw u16>` y `1b 37` / `1c 37 <id> <flags> [1 byte si flags & 1] <x> <y> <z> <yaw u16>`:
+  una entidad se mueve, también tú. `1b` empieza a andar, `1c` informa cada ~2 m y `1a` se para; el
+  yaw (u16 × 360/65536, como `atan2(dy, dx)`) es la dirección de la marcha. Tus registros llevan flags `05`. Tu entidad se reconoce porque se mueve justo donde te
   teletransportaste. Otros opcodes con la forma `<id> <posición>` se aprenden solos.
 - `34 36 <id> <tipo> 00 <código u32> <x> <y> <z>`: aparece un **objeto** (nodos de recolección, Empyrean
   Traces y, casi seguro, los Hidden Cubes). Las posiciones coinciden al centímetro con aion2.th.gl.
@@ -59,7 +60,8 @@ Los paquetes que envía tu cliente van **cifrados por completo** (comprobado en 
 movimiento de tu propia entidad, que el servidor envía al empezar a moverte, girar o pararte. Mientras
 no se identifica tu entidad, se estima con el centro de las entidades que el servidor te va mostrando
 (radar con "posición aproximada"). Entre un registro y el siguiente, el radar desliza tu posición con
-tu velocidad reciente para que se mueva de forma continua.
+tu velocidad (la de `29 37`, o la medida entre tus registros) en la dirección de tu yaw, hasta que
+llega un registro de parada, para que se mueva de forma continua.
 
 Los datos de aion2.th.gl guardan las coordenadas como `[y, x]` del juego (`fromInGameCoords`), y en
 su mapa +X es el este y +Y el sur. La herramienta detecta sola ese intercambio de ejes (`yx`).
@@ -215,6 +217,9 @@ Para ver el detalle:
   spawns de los puntos de cada mapa, y el estado del aprendizaje de la posición propia.
 - **Copiar diagnóstico** (clic derecho): copia ese texto al portapapeles para compartirlo. No contiene
   nombres de personajes ni chat.
+- **Traza de tu entidad**: `logs\selftrace-*.txt` guarda cada paquete del servidor que menciona tu
+  entidad (sin los que llevan nombres), para decodificar más registros. Compártela si el radar no te
+  sigue bien.
 - **Log**: `%APPDATA%\Aion2Helper\logs\aion2helper.log`, con el mismo informe cada 30 s, la conexión
   elegida, el mapa reconocido y los errores (clic derecho > *Abrir carpeta de logs*).
 - **Grabar y analizar**: `python -m aion2_helper --record juego.pcap` mientras juegas un par de minutos

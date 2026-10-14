@@ -135,6 +135,10 @@ class CubeDetector:
         # Not cleared at a zone change, whose bundle can carry your pet's spawn just before it.
         self._spawned_ids: set[int] = set()
         self._self_vel: tuple[float, float, float] | None = None
+        self._self_yaw: tuple[float, float] | None = None  # (time, yaw degrees) of your last record
+        self._moving = False
+        self._speed: float | None = None  # units/s, measured between your records
+        self._last_fix: tuple[float, Vec3] | None = None
         self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
 
     @property
@@ -296,6 +300,12 @@ class CubeDetector:
         two reports. Lets the radar glide between them."""
         if self._self_vel is not None and now - self._self_vel[0] <= 1.5:
             return self._self_vel[1], self._self_vel[2]
+        if self._self_yaw is not None:
+            # Walking along your facing at your measured speed, until a stop record (1a 37).
+            if not self._moving or now - self._self_yaw[0] > 4.0 or self._speed is None:
+                return None
+            a = math.radians(self._self_yaw[1])
+            return self._speed * math.cos(a), self._speed * math.sin(a)
         if len(self._trail) < 2:
             return None
         (t1, a), (t2, b) = self._trail[-2], self._trail[-1]
@@ -307,7 +317,11 @@ class CubeDetector:
         return vx, vy
 
     def heading(self, now: float) -> float | None:
-        """Bearing of your last couple of seconds of movement, if you moved more than 1.5 m."""
+        """Where you face (from your last record's yaw), else the bearing of your last couple of
+        seconds of movement, if you moved more than 1.5 m."""
+        if self._self_yaw is not None and now - self._self_yaw[0] <= 15.0:
+            a = math.radians(self._self_yaw[1])
+            return bearing((0.0, 0.0, 0.0), (math.cos(a), math.sin(a), 0.0))
         recent = [(t, p) for t, p in self._trail if now - t <= 2.5]
         if len(recent) < 2:
             return None
@@ -316,6 +330,26 @@ class CubeDetector:
             return None
         return bearing(a, b)
 
+    def _self_update(self, mv: EntityMove, t: float) -> None:
+        """One of your own movement records: position, and what it says about where you are heading."""
+        last = self._last_fix
+        if last is not None and self._moving and 0.2 <= t - last[0] <= 5.0:
+            measured = distance_2d(last[1], mv.pos) / (t - last[0])
+            if 100 <= measured <= 3000:
+                self._speed = measured if self._speed is None else 0.5 * self._speed + 0.5 * measured
+        self._last_fix = (t, mv.pos)
+        self._set_self(mv.pos, "servidor", t)
+        if mv.velocity is not None:
+            self._self_vel = (t, mv.velocity[0], mv.velocity[1])
+            self._moving = True
+        if mv.yaw is not None:
+            self._self_yaw = (t, mv.yaw)
+        if mv.phase == "stop":
+            self._moving = False
+            self._self_vel = None
+        elif mv.phase in ("start", "move"):
+            self._moving = True
+
     @property
     def self_candidates(self) -> dict[int, int]:
         return dict(self._self_candidates)
@@ -323,9 +357,7 @@ class CubeDetector:
     def _move(self, mv: EntityMove, t: float) -> None:
         if mv.entity_id == self.self_id or (self.self_id is None and mv.entity_id == self._self_hint):
             self.diag.count("self_moves")
-            self._set_self(mv.pos, "servidor", t)
-            if mv.velocity is not None:
-                self._self_vel = (t, mv.velocity[0], mv.velocity[1])
+            self._self_update(mv, t)
             return
         self.diag.count("moves")
         self._recent.append((t, mv.pos))
@@ -342,9 +374,7 @@ class CubeDetector:
                 log.info("Tu entidad (flags 05): id %s", mv.entity_id)
             self.self_id = mv.entity_id
             self._self_candidates.clear()
-            self._set_self(mv.pos, "servidor", t)
-            if mv.velocity is not None:
-                self._self_vel = (t, mv.velocity[0], mv.velocity[1])
+            self._self_update(mv, t)
             return
         # Moving, yet never spawned as a monster, object or pet: maybe you. Moving where you just
         # teleported counts much more, and so does the 05 flags byte, which in four live sessions only
@@ -361,9 +391,7 @@ class CubeDetector:
         if not settled and n == ranked[0] and n >= 10 and n >= 2 * second:
             self.self_id = mv.entity_id
             log.info("Tu entidad: id %s", mv.entity_id)
-            self._set_self(mv.pos, "servidor", t)
-            if mv.velocity is not None:
-                self._self_vel = (t, mv.velocity[0], mv.velocity[1])
+            self._self_update(mv, t)
 
     def _map_load(self, number: int, t: float) -> None:
         self.diag.count("map_loads")
@@ -409,6 +437,9 @@ class CubeDetector:
             self.handle(ZoneChange(), t)
             self.map_number = None
             self.self_id = None
+            self._self_yaw = None
+            self._moving = False
+            self._last_fix = None
             self._spawned_ids.clear()
             self._others.clear()
             if self.locator:

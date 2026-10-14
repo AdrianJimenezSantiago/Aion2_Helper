@@ -228,6 +228,8 @@ class EntityMove:
     pos: Vec3
     velocity: Vec3 | None = None  # units (cm) per second, when the record carries it
     flags: int | None = None  # the byte after the id in 1b 37 / 1c 37: 05 for your own entity (live)
+    yaw: float | None = None  # facing, degrees, Unreal convention (atan2(dy, dx)); u16 after the position
+    phase: str | None = None  # "start" (1b 37), "move" (1c 37) or "stop" (1a 37)
 
 
 @dataclass
@@ -288,10 +290,16 @@ def _move_pos_at(packet: bytes, at: int, skip: int) -> tuple[Vec3, int] | None:
     return None
 
 
+# 1b 37 starts a walk, 1c 37 reports it every ~2 m, 1a 37 ends it (a shorter last step), live.
+MOVE_PHASES = {b"\x1b\x37": "start", b"\x1c\x37": "move", b"\x1a\x37": "stop"}
+
 # Bytes between the entity id and the position in a 23 36 teleport / position record.
 TELEPORT_POS_SKIP = 5
 # Offset of the position after the 21 36 opcode.
 MAP_LOAD_POS_AT = 16
+
+# Records that carry character names: never traced or sampled.
+NAMED_OPCODES = {b"\x33\x36", b"\x45\x36", b"\x44\x36"}
 
 # Opcodes whose packets are kept as samples for diagnostics (none carries names).
 SAMPLED_OPCODES = {b"\x23\x36", b"\x21\x36", b"\x42\x36", b"\x1d\x37", b"\x1c\x37", b"\x1b\x37", b"\x1a\x37",
@@ -403,6 +411,7 @@ class ServerStreamParser:
 
         self.op = dataclasses.replace(opcodes, moves=dict(opcodes.moves))  # learned moves stay with this parser
         self.diag = diag
+        self.watch_id: int | None = None  # your entity: every packet about it goes to the self trace
         self._spawn_leads = {c[0] for c in opcodes.spawn}
         # opcode -> [packets seen, hits per skip 0..3]
         self._move_stats: dict[bytes, list[int]] = {}
@@ -453,6 +462,10 @@ class ServerStreamParser:
             self.diag.opcode(op)
             if op in SAMPLED_OPCODES:
                 self.diag.sample(op, packet)
+            if self.watch_id is not None and op not in NAMED_OPCODES:
+                eid, l1 = read_varint(packet, o + 2)
+                if l1 > 0 and eid == self.watch_id:
+                    self.diag.self_packet(op, packet)
         if op in self.op.zone_change:
             eid, l1 = read_varint(packet, o + 2)
             if l1 > 0:
@@ -470,7 +483,12 @@ class ServerStreamParser:
                 pos, at = found
                 vel = _velocity(packet, at + 12) if op in self.op.velocity_moves else None
                 flags = packet[o + 2 + l1] if op in (b"\x1b\x37", b"\x1c\x37") and o + 2 + l1 < len(packet) else None
-                events.append(EntityMove(eid, pos, vel, flags))
+                yaw = phase = None
+                if op in MOVE_PHASES and at + 14 <= len(packet):
+                    # A monster stepping 1.99 m every 1c 37 moved exactly along this yaw (206.0 deg, live).
+                    yaw = struct.unpack_from("<H", packet, at + 12)[0] * 360.0 / 65536
+                    phase = MOVE_PHASES[op]
+                events.append(EntityMove(eid, pos, vel, flags, yaw, phase))
             return
         if len(packet) <= LEARN_MOVE_MAX_LEN and op[1] in (0x36, 0x37, 0x38) and self._learn_move(op, packet, o):
             return

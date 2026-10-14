@@ -39,6 +39,9 @@ class Diagnostics:
         self.samples: dict[str, deque[str]] = {}
         self.client_opcodes: Counter[str] = Counter()
         self.learned_moves: dict[str, int] = {}
+        self.self_opcodes: Counter[str] = Counter()
+        self.trace_path: Path | None = None  # every packet about your entity, for decoding (no names)
+        self._trace_lines = 0
         self.client_samples: dict[str, deque[str]] = {}
 
     def count(self, key: str, n: int = 1) -> None:
@@ -63,6 +66,18 @@ class Diagnostics:
             self.client_opcodes[key] += 1
             d = self.client_samples.setdefault(key, deque(maxlen=2))
             d.append(f"[{len(packet)}] " + bytes(packet[:44]).hex(" "))
+
+    def self_packet(self, op: bytes, packet: bytes) -> None:
+        with self._lock:
+            self.self_opcodes[op.hex(" ")] += 1
+            if self.trace_path is None or self._trace_lines > 20000:
+                return
+            self._trace_lines += 1
+            try:
+                with open(self.trace_path, "a", encoding="utf-8") as f:
+                    f.write(f"{time.time():.3f} {op.hex(' ')} [{len(packet)}] {bytes(packet[:72]).hex(' ')}\n")
+            except OSError:
+                self.trace_path = None
 
     def spawn(self, code: int | None, pos: Vec3 | None) -> None:
         with self._lock:
@@ -101,6 +116,8 @@ class Diagnostics:
             f"Movimientos: {c['moves']} de otras entidades, {c['self_moves']} tuyos · mapas cargados: {c['map_loads']}"
             + (f" · opcodes de movimiento aprendidos: {', '.join(f'{k} (+{v})' for k, v in self.learned_moves.items())}" if self.learned_moves else ""),
             f"Cliente (cifrado): {c['client_frames']} paquetes",
+            "Tus registros por opcode: " + (", ".join(f"{op}×{n}" for op, n in self.self_opcodes.most_common(10)) or "ninguno aún")
+            + (f" · traza: {self.trace_path.name}" if self.trace_path else ""),
         ]
         if zones and len(zones) >= 2:
             gaps = [b - a for a, b in zip(zones, zones[1:])]

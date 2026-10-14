@@ -197,6 +197,7 @@ class Dispatcher:
         self.detector.status = "Buscando la conexión del juego"
 
     def _consume_down(self, buf: bytes, t: float) -> int:
+        self.parser.watch_id = self.detector.self_id
         events, consumed = self.parser.consume(buf)
         for e in events:
             self.detector.handle(e, t)

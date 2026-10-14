@@ -540,3 +540,68 @@ def test_live_your_own_player_spawn_does_not_hide_you():
         clock.t += 0.3
         det.handle(e)
     assert det.self_id == 7901 and det.self_source == "servidor"
+
+
+# Eighth live session: a monster (d4 92 02) walking: 1b, 1c, 1c every 1.99 m, then 1a 0.57 m on.
+LIVE6_WALK = [
+    "1b 1b 37 d4 92 02 04 1c a9 22 47 28 bd 90 46 00 31 14 47 7a 92 7a 92 01",
+    "1b 1c 37 d4 92 02 04 48 f6 21 47 d4 0e 90 46 00 44 14 47 7b 92 7b 92 01",
+    "1b 1c 37 d4 92 02 04 5f 43 21 47 6c 60 8f 46 00 61 14 47 7b 92 7b 92 01",
+    "19 1a 37 d4 92 02 00 00 c4 0f 21 47 1a 2e 8f 46 00 61 14 47 7c 92",
+]
+
+
+def test_live_yaw_is_the_walking_direction():
+    import math
+
+    events, _ = ServerStreamParser().consume(b"".join(_live(h) for h in LIVE6_WALK))
+    assert [e.phase for e in events] == ["start", "move", "move", "stop"]
+    for a, b in zip(events, events[1:]):
+        walked = math.degrees(math.atan2(b.pos[1] - a.pos[1], b.pos[0] - a.pos[0])) % 360
+        assert abs(walked - a.yaw) < 0.5  # 206.0
+
+
+def test_your_walk_is_carried_along_your_yaw_until_you_stop():
+    import math
+
+    from aion2_helper.protocol import EntityMove
+
+    det, clock = _det()
+    det.self_id = 949
+    evs = ServerStreamParser().consume(b"".join(_live(h) for h in LIVE6_WALK))[0]
+    for e in evs[:3]:
+        clock.t += 1.0
+        det.handle(EntityMove(949, e.pos, None, 0x05, e.yaw, e.phase))
+    snap = det.snapshot()
+    vx, vy = snap.velocity
+    assert math.hypot(vx, vy) == pytest_approx(199.0) or abs(math.hypot(vx, vy) - 199) < 2  # 1.99 m per second
+    assert abs(math.degrees(math.atan2(vy, vx)) % 360 - 206.0) < 0.5
+    assert snap.heading_deg == pytest_approx(bearing_of(206.0))
+    clock.t += 0.3
+    e = evs[3]
+    det.handle(EntityMove(949, e.pos, None, None, e.yaw, e.phase))
+    assert det.snapshot().velocity is None  # stopped: nothing to carry forward
+
+
+def bearing_of(yaw: float) -> float:
+    import math
+
+    from aion2_helper.detector import bearing
+
+    a = math.radians(yaw)
+    return bearing((0.0, 0.0, 0.0), (math.cos(a), math.sin(a), 0.0))
+
+
+def test_packets_about_you_are_traced(tmp_path):
+    from aion2_helper.protocol import encode_varint
+
+    det = CubeDetector(Config(None))
+    det.diag.trace_path = tmp_path / "selftrace.txt"
+    parser = ServerStreamParser(DEFAULT_OPCODES, det.diag)
+    parser.watch_id = 949
+    parser.consume(frame(b"\x1d\x37" + encode_varint(949) + b"\x2e\xef\xf8\x0a\x7b\x92\x7b\x92\x01")
+                   + frame(b"\x1d\x37" + encode_varint(950) + b"\x2e\x00")
+                   + frame(b"\x45\x36" + encode_varint(949) + b"\x05Name!"))  # names are never traced
+    lines = (tmp_path / "selftrace.txt").read_text().splitlines()
+    assert len(lines) == 1 and " 1d 37 " in lines[0] and "b5 07" in lines[0]
+    assert dict(det.diag.self_opcodes) == {"1d 37": 1}

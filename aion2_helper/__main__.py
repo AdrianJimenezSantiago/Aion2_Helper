@@ -85,6 +85,7 @@ def cmd_run(args) -> int:
         from .diag import log, setup_logging, start_periodic_report
 
         log_file = setup_logging(_logs_dir(cfg))
+        detector.diag.trace_path = _logs_dir(cfg) / f"selftrace-{datetime.now():%Y%m%d-%H%M%S}.txt"
         log.info("Aion2 Helper %s · config %s · interfaz %s", __version__, cfg.path, args.iface or "por defecto")
         start_periodic_report(detector.diag, detector, stop)
         print(f"Log de diagnóstico: {log_file}")

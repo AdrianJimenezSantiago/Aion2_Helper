@@ -374,3 +374,70 @@ def test_flag_1_removes_an_entity():
     for e in events:
         det.handle(e, 1.0)
     assert det.entity_count == 0
+
+
+# Second live session (2026-10-14): your own entity (ac 12 = 2348) with flags 05 03.
+LIVE2_TELEPORT = "1e 23 36 00 00 00 00 00 00 be 1c 94 c6 64 70 0f 48 00 c8 09 47 02 00 00 00 82 2d"
+LIVE2_SELF_MOVES = [
+    "1a 1b 37 ac 12 05 03 be 1c 92 c6 64 70 0f 48 38 f7 09 47 b6 9b b6 9b",
+    "1a 1c 37 ac 12 05 03 74 e2 95 c6 4d 43 0f 48 23 ab 09 47 9f 99 62 99",
+]
+LIVE2_OTHER_MOVE = "1a 1b 37 89 5b 01 01 1a 15 9b c6 b9 d3 0d 48 aa 02 04 47 f8 e5 f8 e5"
+
+
+def test_live_flags_byte_decides_where_the_position_is():
+    import pytest
+
+    from aion2_helper.protocol import EntityMove
+
+    events, _ = ServerStreamParser().consume(b"".join(_live(h) for h in LIVE2_SELF_MOVES + [LIVE2_OTHER_MOVE]))
+    assert [type(e) for e in events] == [EntityMove] * 3
+    assert [e.entity_id for e in events] == [2348, 2348, 11657]
+    assert events[0].pos == pytest.approx((-18702.4, 146881.6, 35319.2), abs=0.1)
+    assert events[1].pos == pytest.approx((-19185.2, 146701.2, 35243.1), abs=0.1)
+    assert events[2].pos == pytest.approx((-19850.6, 145230.9, 33794.7), abs=0.1)
+
+
+def test_live_your_entity_is_found_and_followed():
+    from aion2_helper.protocol import SelfIdentity
+
+    det, clock = _det()
+    det.handle(SelfIdentity(16329))  # the self record's number: only a hint
+    for e in ServerStreamParser().consume(_live(LIVE2_TELEPORT) + b"".join(_live(h) for h in LIVE2_SELF_MOVES))[0]:
+        clock.t += 0.5
+        det.handle(e)
+    assert det.self_id == 2348 and det.self_source == "servidor"
+    clock.t += 30  # no record of yours for a while: the last position holds
+    snap = det.snapshot()
+    assert snap.self_source == "servidor" and snap.self_pos[0] == pytest_approx(-19185.2)
+
+
+def pytest_approx(v):
+    import pytest
+
+    return pytest.approx(v, abs=0.1)
+
+
+def test_unknown_movement_opcode_is_learned():
+    from aion2_helper.protocol import EntityMove, encode_varint
+
+    stream = b""
+    for i in range(20):
+        stream += frame(b"\x29\x37" + encode_varint(500 + i) + b"\x03" + struct.pack("<fff", 1000.0 + i, -2000.0, 300.0) + b"\x01\x02")
+    det = CubeDetector(Config(None))
+    events, _ = ServerStreamParser(DEFAULT_OPCODES, det.diag).consume(stream)
+    moves = [e for e in events if isinstance(e, EntityMove)]
+    assert det.diag.learned_moves == {"29 37": 1}
+    assert len(moves) >= 7 and moves[-1].pos == (1019.0, -2000.0, 300.0)
+    assert b"\x29\x37" not in DEFAULT_OPCODES.moves  # learned per parser, not globally
+
+
+def test_noise_opcode_is_not_learned_as_movement():
+    import os
+
+    from aion2_helper.protocol import encode_varint
+
+    stream = b"".join(frame(b"\x2a\x37" + encode_varint(300 + i) + os.urandom(20)) for i in range(60))
+    det = CubeDetector(Config(None))
+    ServerStreamParser(DEFAULT_OPCODES, det.diag).consume(stream)
+    assert det.diag.learned_moves == {}

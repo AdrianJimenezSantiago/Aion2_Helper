@@ -46,15 +46,16 @@ Usa la misma técnica que los DPS meters open source del juego
   posición exacta.
 - `21 36 <u32> <u32 id de mapa> <8 bytes> <x> <y> <z>`: carga de mapa (1010 = Verteron) y tu posición.
   La herramienta aprende qué id corresponde a cada mapa.
-- `1a 37 <id> <2 bytes> <x> <y> <z>` y `1b 37` / `1c 37 <id> <1 byte> <x> <y> <z>`: una entidad se
-  mueve. Tu propia entidad aparece en ellos constantemente; su id llega en tu registro propio
-  (`33 36 <id>`) o se reconoce porque se mueve justo donde te teletransportaste.
+- `1a 37 <id> <2 bytes> <x> <y> <z>` y `1b 37` / `1c 37 <id> <flags> [1 byte si flags & 1] <x> <y> <z>`:
+  una entidad se mueve, también tú. Tu entidad se reconoce porque se mueve justo donde te
+  teletransportaste. Otros opcodes con la forma `<id> <posición>` se aprenden solos.
 - Bloques LZ4 dentro de otros paquetes: también se abren (llevan spawns).
 
-Los paquetes que envía tu cliente van **cifrados**, así que tu **posición propia** sale del servidor:
-exacta al entrar en una zona y, después, siguiendo a tu propia entidad, que se reconoce porque sus
-actualizaciones empiezan donde te teletransportaste. Mientras no se identifica, se estima con el centro
-de las entidades que el servidor te va mostrando (radar con "posición aproximada").
+Los paquetes que envía tu cliente van **cifrados por completo** (comprobado en directo), así que tu
+**posición propia** sale del servidor: exacta al entrar en una zona y, después, de los registros de
+movimiento de tu propia entidad, que el servidor envía al empezar a moverte, girar o pararte. Mientras
+no se identifica tu entidad, se estima con el centro de las entidades que el servidor te va mostrando
+(radar con "posición aproximada").
 
 Los datos de aion2.th.gl guardan las coordenadas como `[y, x]` del juego (`fromInGameCoords`), y en
 su mapa +X es el este y +Y el sur. La herramienta detecta sola ese intercambio de ejes (`yx`).

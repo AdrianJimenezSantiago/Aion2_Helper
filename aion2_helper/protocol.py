@@ -14,7 +14,8 @@ What is known comes from the open-source DPS meters that read the same stream
     23 36 00 <5 bytes> <x f32> <y f32> <z f32> ...   the local player teleported (a zone load): where you are
     21 36 <u32> <u32 map id> <8 bytes> <x> <y> <z>   map load (Map table id: 1010 = Verteron), and where you are
     1a 37 <id varint> <2 bytes> <x> <y> <z> ...      an entity moved
-    1b 37 | 1c 37 <id varint> <1 byte> <x> <y> <z>   an entity moved (also seen: your own entity, all the time)
+    1b 37 | 1c 37 <id varint> <flags> [<1 byte> if flags & 1] <x> <y> <z>   an entity moved; your
+                                                     own entity too (flags 05 03), a few metres from you
     33 36 <id varint> ...                            your self record, at each map load: your entity id
 
 Layouts of 23 36, 21 36 and 1a-1c 37 were read off a live capture of 2026-10-14
@@ -233,6 +234,31 @@ class SelfIdentity:
 
 Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity
 
+# Movement records not in the table are learned: an opcode whose short packets keep carrying
+# <id varint> <skip bytes> <plausible position> is taken as one, with that skip.
+LEARN_MOVE_MAX_LEN = 80
+LEARN_MOVE_MIN_PACKETS = 12
+LEARN_MOVE_SHARE = 0.85
+
+
+def _move_pos(packet: bytes, at: int, skip: int) -> Vec3 | None:
+    """A movement record's position: at ``skip`` bytes past the id, or where its flags byte says
+    (bit 0 set: one more byte before the position), or a byte either side."""
+    tries = [skip]
+    if at < len(packet):
+        tries.append(2 if packet[at] & 1 else 1)
+    tries += [1, 2, 3, 0]
+    seen = set()
+    for k in tries:
+        if k in seen:
+            continue
+        seen.add(k)
+        pos = _read_pos(packet, at + k)
+        if pos is not None and max(abs(pos[0]), abs(pos[1])) >= 100:
+            return pos
+    return None
+
+
 # Bytes between the entity id and the position in a 23 36 teleport / position record.
 TELEPORT_POS_SKIP = 5
 # Offset of the position after the 21 36 opcode.
@@ -240,7 +266,7 @@ MAP_LOAD_POS_AT = 16
 
 # Opcodes whose packets are kept as samples for diagnostics (none carries names).
 SAMPLED_OPCODES = {b"\x23\x36", b"\x21\x36", b"\x42\x36", b"\x1d\x37", b"\x1c\x37", b"\x1b\x37", b"\x1a\x37",
-                   b"\x34\x36", b"\x35\x36", b"\x24\x37", b"\x44\x37"}
+                   b"\x29\x37", b"\x2a\x37", b"\x1f\x37", b"\x4b\x36", b"\x34\x36"}
 
 
 def plausible_world_pos(x: float, y: float, z: float) -> bool:
@@ -317,9 +343,14 @@ class ServerStreamParser:
     """Turns the server-to-client byte stream into entity events."""
 
     def __init__(self, opcodes: Opcodes = DEFAULT_OPCODES, diag=None):
-        self.op = opcodes
+        import dataclasses
+
+        self.op = dataclasses.replace(opcodes, moves=dict(opcodes.moves))  # learned moves stay with this parser
         self.diag = diag
         self._spawn_leads = {c[0] for c in opcodes.spawn}
+        # opcode -> [packets seen, hits per skip 0..3]
+        self._move_stats: dict[bytes, list[int]] = {}
+        self._not_moves = set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load) | set(opcodes.self_identity)
 
     def consume(self, buffer: bytes) -> tuple[list[Event], int]:
         events: list[Event] = []
@@ -375,9 +406,11 @@ class ServerStreamParser:
                     return
         if op in self.op.moves:
             eid, l1 = read_varint(packet, o + 2)
-            pos = _read_pos(packet, o + 2 + l1 + self.op.moves[op]) if l1 > 0 else None
+            pos = _move_pos(packet, o + 2 + l1, self.op.moves[op]) if l1 > 0 else None
             if pos is not None and 1 <= eid <= MAX_ENTITY_ID:
                 events.append(EntityMove(eid, pos))
+            return
+        if len(packet) <= LEARN_MOVE_MAX_LEN and op[1] in (0x36, 0x37, 0x38) and self._learn_move(op, packet, o):
             return
         if op in self.op.map_load and o + 10 <= len(packet):
             events.append(MapLoad(struct.unpack_from("<I", packet, o + 6)[0], _read_pos(packet, o + 2 + MAP_LOAD_POS_AT)))
@@ -399,6 +432,33 @@ class ServerStreamParser:
         self._scan_spawns(packet, events)
         if depth < 3:
             self._embedded_bundles(packet, events, depth)
+
+    def _learn_move(self, op: bytes, packet: bytes, o: int) -> bool:
+        """Counts how often ``op`` looks like <id> <skip> <position>; adopts it once it clearly does."""
+        if op in self._not_moves:
+            return False
+        eid, l1 = read_varint(packet, o + 2)
+        if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID):
+            return False
+        st = self._move_stats.setdefault(bytes(op), [0, 0, 0, 0, 0])
+        st[0] += 1
+        for k in range(4):
+            pos = _read_pos(packet, o + 2 + l1 + k)
+            if pos is not None and max(abs(pos[0]), abs(pos[1])) >= 100:
+                st[1 + k] += 1
+        if st[0] >= LEARN_MOVE_MIN_PACKETS:
+            best = max(range(4), key=lambda k: st[1 + k])
+            if st[1 + best] >= LEARN_MOVE_SHARE * st[0]:
+                self.op.moves[bytes(op)] = best
+                if self.diag is not None:
+                    self.diag.learned_moves[op.hex(" ")] = best
+                from .diag import log
+
+                log.info("Opcode de movimiento aprendido: %s (salto %s)", op.hex(" "), best)
+                return False
+            if st[0] > 200:
+                self._not_moves.add(bytes(op))
+        return False
 
     def _embedded_bundles(self, packet: bytes, events: list[Event], depth: int) -> None:
         """LZ4 bundles carried inside a larger packet, where the framing never opens them.

@@ -127,6 +127,7 @@ class CubeDetector:
         self._teleport: tuple[Vec3, float] | None = None
         self._self_t = 0.0
         self._self_candidates: dict[int, int] = {}
+        self._self_hint: int | None = None
         self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
 
     @property
@@ -251,9 +252,9 @@ class CubeDetector:
                     self._teleport = (event.pos, t)
                     self._set_self(event.pos, "teletransporte", t)
             elif isinstance(event, SelfIdentity):
-                if event.entity_id != self.self_id:
-                    log.info("Tu entidad (registro propio): id %s", event.entity_id)
-                self.self_id = event.entity_id
+                # Only a hint: what follows the 33 36 opcode is not proven to be the entity id
+                # the movement records use (a live session got 16329 there, 2348 in the moves).
+                self._self_hint = event.entity_id
 
     # ───── where you are ─────
 
@@ -288,8 +289,12 @@ class CubeDetector:
             return None
         return bearing(a, b)
 
+    @property
+    def self_candidates(self) -> dict[int, int]:
+        return dict(self._self_candidates)
+
     def _move(self, mv: EntityMove, t: float) -> None:
-        if mv.entity_id == self.self_id:
+        if mv.entity_id == self.self_id or (self.self_id is None and mv.entity_id == self._self_hint):
             self.diag.count("self_moves")
             self._set_self(mv.pos, "servidor", t)
             return
@@ -334,7 +339,8 @@ class CubeDetector:
         if self.tracker.locked:
             self.self_source = "cliente"
             return
-        if self.self_source in ("servidor", "cliente") and now - self._self_t < 10:
+        # Your own entity's records come when you start, turn or stop: hold the last one a while.
+        if self.self_source in ("servidor", "cliente") and now - self._self_t < 60:
             return
         if self.self_source == "teletransporte" and self._teleport and now - self._teleport[1] < TELEPORT_FRESH_S:
             return

@@ -69,6 +69,8 @@ class Diagnostics:
         lines = [
             f"Red: {c['seg_down']} segmentos del servidor, {c['seg_up']} del cliente, "
             f"{c['seg_other']} de otras conexiones del servidor (ignorados), {c['conn_locks']} conexiones fijadas",
+            f"TCP: {c['tcp_gaps']} huecos ({c['tcp_gap_bytes']} bytes perdidos), {c['tcp_dup_bytes']} bytes repetidos, "
+            f"{c['queue_full']} paquetes descartados por cola llena",
             f"Tramas: {c['frames']} paquetes, {c['bundles']} bloques LZ4 ({c['bundle_fail']} fallidos), "
             f"{c['resync']} bytes de resincronización",
             "Opcodes más frecuentes: " + (", ".join(f"{op}×{n}" for op, n in ops) or "ninguno"),

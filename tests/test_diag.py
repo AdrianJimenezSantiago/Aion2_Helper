@@ -133,3 +133,61 @@ def test_game_moving_to_a_new_connection_is_followed():
     for i in range(14):  # 10 s later, a reconnect from a new client port
         d.process(Segment(10 + i * 0.1, "10.0.0.1", 7777, "10.0.0.2", 5002, 1 + i * 6, frame(b"\x0e\x00\x36\x01")))
     assert d._flow[3] == 5002 and det.diag.counts["conn_locks"] == 2
+
+
+def _live_frames(n_spawns: int):
+    """Server -> client game segments as scapy dissects them off the wire, each followed by
+    a bare ACK from the server padded to 60 bytes with non-zero junk (seen live 2026-10-14)."""
+    from scapy.layers.inet import IP, TCP
+    from scapy.layers.l2 import Ether
+
+    seq = 5000
+    out = []
+    for i in range(n_spawns):
+        body = frame(b"\x0e\x00\x36\x01\x02") + frame(spawn_body(800 + i, 2_100_744, (148066.0 + i, 96086.0, 28598.0)))
+        data = Ether() / IP(src="193.202.112.94", dst="192.168.1.5") / TCP(sport=13328, dport=50000, seq=seq, flags="PA") / body
+        out.append(Ether(bytes(data)))
+        seq += len(body)
+        ack = Ether() / IP(src="193.202.112.94", dst="192.168.1.5") / TCP(sport=13328, dport=50000, seq=seq, flags="A")
+        out.append(Ether(bytes(ack) + b"\xbe\xde\x00\x03\x66\xfd"))
+    return out
+
+
+def test_ethernet_padding_of_bare_acks_does_not_corrupt_the_stream():
+    from aion2_helper.capture import LiveCapture
+
+    det = CubeDetector(Config(None))
+    d = Dispatcher(det, DEFAULT_OPCODES)
+    cap = LiveCapture(d)
+    t = 100.0
+    for pkt in _live_frames(40):
+        pkt.time = t
+        t += 0.02
+        cap._on_packet(pkt)
+    while not cap._q.empty():
+        d.process(cap._q.get_nowait())
+    assert d.locked
+    assert det.diag.counts["spawns"] >= 28  # all of them after the lock
+    assert det.diag.counts["tcp_dup_bytes"] == 0 and det.diag.counts["tcp_gaps"] == 0
+
+
+def test_segment_from_frame_handles_link_layers_and_offload():
+    import socket
+    import struct as st
+
+    from aion2_helper.capture import segment_from_frame
+
+    def ip_tcp(payload: bytes, total: int | None = None) -> bytes:
+        tcp = st.pack("!HHIIBBHHH", 13328, 50000, 7, 0, 5 << 4, 0x18, 65535, 0, 0)
+        ln = 20 + len(tcp) + len(payload) if total is None else total
+        ip = st.pack("!BBHHHBBH4s4s", 0x45, 0, ln, 0, 0, 64, 6, 0, socket.inet_aton("1.2.3.4"), socket.inet_aton("5.6.7.8"))
+        return ip + tcp + payload
+
+    eth = b"\x00" * 12 + b"\x08\x00"
+    assert segment_from_frame(eth + ip_tcp(b"hi") + b"\xbe\xde\x00\x03", 0).data == b"hi"
+    assert segment_from_frame(eth + ip_tcp(b"") + b"\xbe\xde\x00\x03\x66\xfd", 0) is None  # bare ACK
+    assert segment_from_frame(eth + ip_tcp(b"hello", total=0), 0).data == b"hello"  # offload
+    vlan = b"\x00" * 12 + b"\x81\x00\x00\x05\x08\x00"
+    assert segment_from_frame(vlan + ip_tcp(b"hi"), 0).sport == 13328
+    assert segment_from_frame(b"\x02\x00\x00\x00" + ip_tcp(b"hi"), 0).data == b"hi"
+    assert segment_from_frame(ip_tcp(b"hi"), 0).dst == "5.6.7.8"

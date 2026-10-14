@@ -46,8 +46,9 @@ class Segment:
 class TcpStream:
     """Reassembles one direction of a TCP connection and hands complete bytes to ``consume``."""
 
-    def __init__(self, consume: Callable[[bytes, float], int]):
+    def __init__(self, consume: Callable[[bytes, float], int], count: Callable[[str, int], None] | None = None):
         self._consume = consume
+        self._count = count or (lambda key, n: None)
         self._buf = bytearray()
         self._next: int | None = None
         self._held: dict[int, bytes] = {}
@@ -64,9 +65,14 @@ class TcpStream:
                     self._held_since = t
                 self._held[seq] = data
                 if len(self._held) > MAX_HELD_SEGMENTS or t - self._held_since > MAX_HOLD_S:
-                    self._next = min(self._held, key=lambda s: _seq_diff(s, self._next))
+                    nxt = min(self._held, key=lambda s: _seq_diff(s, self._next))
+                    self._count("tcp_gaps", 1)
+                    self._count("tcp_gap_bytes", _seq_diff(nxt, self._next))
+                    self._next = nxt
             else:
                 skip = -diff
+                if skip:
+                    self._count("tcp_dup_bytes", min(skip, len(data)))
                 if skip < len(data):
                     self._append(data[skip:])
                     self._next = (self._next + len(data) - skip) & 0xFFFFFFFF
@@ -175,8 +181,8 @@ class Dispatcher:
         self._flow = flow
         self._last_seen = seg.t
         self._candidates.clear()
-        self._down = TcpStream(self._consume_down)
-        self._up = TcpStream(self._consume_up)
+        self._down = TcpStream(self._consume_down, self.detector.diag.count)
+        self._up = TcpStream(self._consume_up, self.detector.diag.count)
         sip, sport, cip, cport = flow
         self.detector.status = f"Conectado al juego ({sip}:{sport})"
         self.detector.diag.count("conn_locks")
@@ -271,11 +277,33 @@ def read_pcap(path: Path) -> Iterable[Segment]:
                 yield seg
 
 
+def segment_from_frame(frame: bytes, t: float) -> Segment | None:
+    """The TCP segment in a captured frame (Ethernet, 802.1Q, loopback or raw IP), padding excluded."""
+    import socket
+
+    for at in _ip_offsets(frame):
+        if len(frame) > at + 20 and frame[at] >> 4 == 4:
+            return _parse_ipv4_tcp(frame[at:], t, socket)
+    return None
+
+
+def _ip_offsets(frame: bytes) -> list[int]:
+    if len(frame) >= 14 and frame[12:14] == b"\x08\x00":
+        return [14]  # Ethernet
+    if len(frame) >= 18 and frame[12:14] == b"\x81\x00" and frame[16:18] == b"\x08\x00":
+        return [18]  # Ethernet + 802.1Q tag
+    if len(frame) >= 4 and frame[:4] in (b"\x02\x00\x00\x00", b"\x00\x00\x00\x02"):
+        return [4]  # Npcap / BSD loopback
+    return [0, 16]  # raw IP (VPN), Linux cooked
+
+
 def _parse_ipv4_tcp(ip: bytes, t: float, socket) -> Segment | None:
     if len(ip) < 20 or ip[0] >> 4 != 4 or ip[9] != 6:
         return None
     ihl = (ip[0] & 0x0F) * 4
-    total = struct.unpack("!H", ip[2:4])[0] or len(ip)
+    total = struct.unpack("!H", ip[2:4])[0]
+    if total < ihl + 20 or total > len(ip):
+        total = len(ip)  # 0 with segmentation offload, or a truncated frame: keep the frame's end
     tcp = ip[ihl:total]
     if len(tcp) < 20:
         return None
@@ -344,19 +372,18 @@ class LiveCapture:
         self._sniffer.start()
 
     def _on_packet(self, pkt) -> None:
+        # Never bytes(pkt[TCP].payload): scapy puts the Ethernet padding of short
+        # frames there, so every bare ACK became 6 bytes of "data" that shifted the
+        # TCP sequence and cut the start of the next real segment. The payload is
+        # read from the original frame, up to the IP total length.
         try:
-            from scapy.layers.inet import IP, TCP
-
-            if IP not in pkt or TCP not in pkt:
-                return
-            tcp = pkt[TCP]
-            data = bytes(tcp.payload)
-            if not data:
-                return
-            ip = pkt[IP]
-            seg = Segment(float(pkt.time), ip.src, int(tcp.sport), ip.dst, int(tcp.dport), int(tcp.seq), data)
-            self._q.put_nowait(seg)
+            raw = getattr(pkt, "original", None) or bytes(pkt)
+            seg = segment_from_frame(bytes(raw), float(pkt.time))
+            if seg is not None:
+                self._q.put_nowait(seg)
         except queue.Full:
+            self.dispatcher.detector.diag.count("queue_full")
+        except Exception:
             pass
 
     def _run(self) -> None:

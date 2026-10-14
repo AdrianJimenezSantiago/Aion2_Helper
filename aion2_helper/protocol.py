@@ -25,6 +25,12 @@ What is known comes from the open-source DPS meters that read the same stream
                                                      clear). Integrated between two fixes of yours it
                                                      lands within 35 cm on average (live, 2026-10-14).
     20 37 <id varint> <flags> <5 bytes> <vx f32> <vy f32> <vz f32> ...   velocity in cm/s (flying)
+    2a 37 <id varint> <flags> ... <vx f32> <vy f32> <vz f32> <yaw u16>   velocity in cm/s, ten a
+                                                     second while flying; matched the 29 37 of the
+                                                     same moment (-1149, 967, 550 vs -1162, 961, 536)
+    28 37 | 29 37 <id varint> <2 bytes> <x> <y> <z> <vx> <vy> <vz> ...   position and velocity (flying)
+    4a 36 <id varint> <n u8> (<stat u16> <value i32>)* ...   your own stats: only ever about you
+                                                     (A2Tools), so its id is your entity
     2a 38 | 2b 38 <target> ... <caster varint> <u8> <u32> <u8> <x> <y> <z>   an effect, with its
                                                      caster's position: yours when you cast it on you
     33 36 <id varint> ...                            your self record, at each map load
@@ -262,11 +268,21 @@ class SelfIdentity:
 
 
 @dataclass
+class SelfStats:
+    """A stats record: only ever sent about your own character."""
+
+    entity_id: int
+
+
+@dataclass
 class PlayerSpawn:
     entity_id: int
 
 
-Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn | EntityVelocity
+Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn | EntityVelocity | SelfStats
+
+SELF_STATS_OPCODE = b"\x4a\x36"
+TAIL_VELOCITY_OPCODE = b"\x2a\x37"  # velocity floats + yaw at the end
 
 VELOCITY_OPCODE = b"\x1d\x37"
 VELOCITY_UNIT = 10.0  # cm/s per unit of the 1d 37 bytes (fitted on a live walk: exactly 10)
@@ -312,6 +328,19 @@ def parse_float_velocity(packet: bytes, o: int) -> "EntityVelocity | None":
     if not all(math.isfinite(c) and abs(c) < 10000 for c in v):
         return None
     return EntityVelocity(eid, v[0], v[1], v[2])
+
+
+def parse_tail_velocity(packet: bytes, o: int) -> "EntityVelocity | None":
+    """``2a 37``: ... <vx> <vy> <vz> <yaw u16> at the end of the record."""
+    eid, l1 = read_varint(packet, o + 2)
+    n = len(packet)
+    if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID) or n - 14 < o + 2 + l1 + 1:
+        return None
+    v = struct.unpack_from("<fff", packet, n - 14)
+    if not all(math.isfinite(c) and abs(c) < 10000 for c in v):
+        return None
+    yaw = struct.unpack_from("<H", packet, n - 2)[0] * 360.0 / 65536
+    return EntityVelocity(eid, v[0], v[1], v[2], yaw)
 
 
 def parse_effect_caster_pos(packet: bytes, o: int) -> "EntityMove | None":
@@ -452,10 +481,12 @@ class Opcodes:
     map_load: list[bytes] = field(default_factory=lambda: [b"\x21\x36"])
     # Movement records: opcode -> bytes between the entity id and the position.
     moves: dict[bytes, int] = field(
-        default_factory=lambda: {b"\x1a\x37": 2, b"\x1b\x37": 1, b"\x1c\x37": 1, b"\x1f\x37": 1, b"\x29\x37": 2}
+        default_factory=lambda: {
+            b"\x1a\x37": 2, b"\x1b\x37": 1, b"\x1c\x37": 1, b"\x1f\x37": 1, b"\x28\x37": 2, b"\x29\x37": 2
+        }  # fmt: skip
     )
     # Movement records followed by a velocity.
-    velocity_moves: list[bytes] = field(default_factory=lambda: [b"\x29\x37"])
+    velocity_moves: list[bytes] = field(default_factory=lambda: [b"\x28\x37", b"\x29\x37"])
     self_identity: list[bytes] = field(default_factory=lambda: [b"\x33\x36"])
     object_spawn: list[bytes] = field(default_factory=lambda: [b"\x34\x36"])
     player_spawn: list[bytes] = field(default_factory=lambda: [b"\x45\x36", b"\x44\x36"])
@@ -474,9 +505,9 @@ class Opcodes:
             map_load=cls._parse(cfg.get("map_load", ["21 36"])),
             moves={
                 bytes.fromhex(k): int(v)
-                for k, v in cfg.get("moves", {"1A 37": 2, "1B 37": 1, "1C 37": 1, "1F 37": 1, "29 37": 2}).items()
+                for k, v in cfg.get("moves", {"1A 37": 2, "1B 37": 1, "1C 37": 1, "1F 37": 1, "28 37": 2, "29 37": 2}).items()
             },
-            velocity_moves=cls._parse(cfg.get("velocity_moves", ["29 37"])),
+            velocity_moves=cls._parse(cfg.get("velocity_moves", ["28 37", "29 37"])),
             self_identity=cls._parse(cfg.get("self_identity", ["33 36"])),
             object_spawn=cls._parse(cfg.get("object_spawn", ["34 36"])),
             player_spawn=cls._parse(cfg.get("player_spawn", ["45 36", "44 36"])),
@@ -499,7 +530,7 @@ class ServerStreamParser:
         self._spawn_leads = {c[0] for c in opcodes.spawn}
         # opcode -> [packets seen, hits per skip 0..3]
         self._move_stats: dict[bytes, list[int]] = {}
-        self._not_moves = {b"\x2a\x37", VELOCITY_OPCODE, FLOAT_VELOCITY_OPCODE} | (  # 2a 37: seen live, not a position
+        self._not_moves = {TAIL_VELOCITY_OPCODE, VELOCITY_OPCODE, FLOAT_VELOCITY_OPCODE, SELF_STATS_OPCODE} | (  # 2a 37: seen live, not a position
             set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load)
             | set(opcodes.self_identity) | set(opcodes.object_spawn) | set(opcodes.player_spawn)
         )  # fmt: skip
@@ -551,7 +582,7 @@ class ServerStreamParser:
                     eid, l1 = read_varint(packet, o + 2)
                     if l1 > 0 and eid == self.watch_id:
                         self.diag.self_packet(op, packet)
-                elif op[1] == 0x37 or op in self.op.zone_change or op in self.op.map_load:
+                elif op[1] == 0x37 or op in self.op.zone_change or op in self.op.map_load or op == SELF_STATS_OPCODE:
                     self.diag.trace_packet(op, packet)  # you are among these: kept to find out which
         if op in self.op.zone_change:
             eid, l1 = read_varint(packet, o + 2)
@@ -573,6 +604,16 @@ class ServerStreamParser:
             if v is not None:
                 events.append(v)
                 return
+        if op == TAIL_VELOCITY_OPCODE:
+            v = parse_tail_velocity(packet, o)
+            if v is not None:
+                events.append(v)
+            return
+        if op == SELF_STATS_OPCODE:
+            eid, l1 = read_varint(packet, o + 2)
+            if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:
+                events.append(SelfStats(eid))
+            return
         if op in EFFECT_OPCODES:
             mv = parse_effect_caster_pos(packet, o)
             if mv is not None:

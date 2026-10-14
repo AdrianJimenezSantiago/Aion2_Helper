@@ -204,14 +204,14 @@ def _det(world=None, **cfg):
 
 
 def test_teleport_gives_your_position_and_your_entity_is_learned():
-    from aion2_helper.protocol import EntityMove, ZoneChange
+    from aion2_helper.protocol import EntityMove, SelfStats, ZoneChange
 
     det, clock = _det()
     det.handle(ZoneChange((100000.0, 50000.0, 3000.0)))
     assert det.tracker.position == (100000.0, 50000.0, 3000.0) and det.self_source == "teletransporte"
     assert det.self_precise
-    det.handle(EntityMove(4321, (100100.0, 50000.0, 3000.0)))  # near the teleport, not a spawned entity
-    det.handle(EntityMove(4321, (100250.0, 50050.0, 3000.0), flags=0x05))  # your own record
+    det.handle(SelfStats(4321))  # your stats: only ever about you
+    det.handle(EntityMove(4321, (100100.0, 50000.0, 3000.0)))
     assert det.self_id == 4321 and det.self_source == "servidor"
     clock.t += 30
     det.handle(EntityMove(4321, (120000.0, 60000.0, 3100.0)))
@@ -400,10 +400,10 @@ def test_live_flags_byte_decides_where_the_position_is():
 
 
 def test_live_your_entity_is_found_and_followed():
-    from aion2_helper.protocol import SelfIdentity
+    from aion2_helper.protocol import SelfStats
 
     det, clock = _det()
-    det.handle(SelfIdentity(16329))  # the self record's number: only a hint
+    det.handle(SelfStats(2348))
     for e in ServerStreamParser().consume(_live(LIVE2_TELEPORT) + b"".join(_live(h) for h in LIVE2_SELF_MOVES))[0]:
         clock.t += 0.5
         det.handle(e)
@@ -461,30 +461,26 @@ def test_live_object_spawns_are_read():
 
 
 def test_other_players_are_never_taken_for_you():
-    from aion2_helper.protocol import EntityMove, PlayerSpawn, ZoneChange
+    """Flags 05 is no sign of you: other players walking near you carry it too (seen live)."""
+    from aion2_helper.protocol import EntityMove, SelfStats, ZoneChange
 
     det, clock = _det()
     det.handle(ZoneChange((1000.0, 1000.0, 0.0)))
-    det.handle(PlayerSpawn(777))  # someone else stepping out of the same portal (flags 01, as seen live)
-    det.handle(PlayerSpawn(2348))  # the zone load spawns your own character too
-    for i in range(3):
-        clock.t += 0.3
-        det.handle(EntityMove(777, (1000.0 + i * 50, 1000.0, 0.0), flags=0x01))
-    assert det.self_id is None
-    clock.t += 0.3
-    det.handle(EntityMove(2348, (1100.0, 1000.0, 0.0), flags=0x05))  # yours: decisive at once
-    assert det.self_id == 2348
-    for i in range(10):
+    det.handle(SelfStats(2348))
+    for i in range(20):
         clock.t += 0.1
-        det.handle(EntityMove(777, (1200.0 + i * 50, 1000.0, 0.0), flags=0x01))
-    assert det.self_id == 2348  # the other player never takes over
+        det.handle(EntityMove(777, (1000.0 + i * 50, 1000.0, 0.0), flags=0x05))
+        det.handle(EntityMove(778, (1000.0, 1000.0 + i * 50, 0.0), flags=0x05))
+    assert det.self_id == 2348
     clock.t += 0.3
-    det.handle(EntityMove(2348, (1220.0, 1000.0, 0.0), flags=0x05))
+    det.handle(EntityMove(2348, (1100.0, 1000.0, 0.0)))
+    clock.t += 0.3
+    det.handle(EntityMove(2348, (1220.0, 1000.0, 0.0)))
     clock.t += 0.2
     v = det.snapshot().velocity
     assert v is not None and v[0] > 50 and abs(v[1]) < 1  # moving east
     clock.t += 0.3
-    det.handle(EntityMove(2348, (1400.0, 1000.0, 0.0)))  # the next report of yours
+    det.handle(EntityMove(2348, (1400.0, 1000.0, 0.0)))
     assert det.snapshot().heading_deg == pytest_approx(90.0)
 
 
@@ -508,11 +504,12 @@ def test_live_29_37_carries_your_velocity():
 
 
 def test_live_pet_spawned_in_the_zone_bundle_is_not_you():
-    from aion2_helper.protocol import EntityMove
+    from aion2_helper.protocol import SelfStats
 
     det, clock = _det()
     det.handle(Spawn(30632, 0x5F, 2_990_000, (3000.0, 87500.0, 40700.0)))  # pet, before the teleport
-    self_1b = "1a 1b 37 ae 3a 05 03 ca a3 40 45 f1 66 ad 47 3f 7a 1f 47 9f 7c 9f 7c"  # same session, flags 05
+    det.handle(SelfStats(7470))
+    self_1b = "1a 1b 37 ae 3a 05 03 ca a3 40 45 f1 66 ad 47 3f 7a 1f 47 9f 7c 9f 7c"
     stream = (_live(LIVE4_TELEPORT) + _live(LIVE4_PET) + _live(LIVE4_SELF[0]) + _live(LIVE4_PET) + _live(self_1b)
               + _live(LIVE4_SELF[1]))  # fmt: skip
     for e in ServerStreamParser().consume(stream)[0]:
@@ -521,7 +518,6 @@ def test_live_pet_spawned_in_the_zone_bundle_is_not_you():
     assert det.self_id == 7470 and det.self_source == "servidor"
     snap = det.snapshot()
     assert snap.velocity == (pytest_approx(-1541.1), pytest_approx(3.3))  # straight from the record
-    assert EntityMove
 
 
 # Seventh live session: you are dd 3d (7901), 12.8 m from the teleport, flags 05.
@@ -531,11 +527,12 @@ LIVE5_PET = "19 1a 37 a8 ef 01 00 00 49 41 40 45 78 25 ab 47 00 11 1f 47 21 6e"
 
 
 def test_live_your_own_player_spawn_does_not_hide_you():
-    from aion2_helper.protocol import PlayerSpawn
+    from aion2_helper.protocol import PlayerSpawn, SelfStats
 
     det, clock = _det()
     det.handle(PlayerSpawn(7901))
     det.handle(Spawn(30632, 0x5F, 2_990_000, (3080.0, 87600.0, 40700.0)))  # the pet
+    det.handle(SelfStats(7901))
     for e in ServerStreamParser().consume(_live(LIVE5_TELEPORT) + _live(LIVE5_PET) + _live(LIVE5_SELF))[0]:
         clock.t += 0.3
         det.handle(e)
@@ -703,3 +700,25 @@ def test_live_walk_is_followed_between_fixes():
     errors.sort()
     assert errors[len(errors) // 2] < 0.6  # metres, median
     assert errors[-1] < 3.0
+
+
+
+def test_live_crowd_with_flags_05_does_not_steal_your_entity():
+    """Replays a live trace (flying, with players walking around): you stay 14625 throughout."""
+    from pathlib import Path
+
+    det, _ = _replay_trace(Path(__file__).parent / "data" / "selftrace_flight.txt")
+    assert det.self_id == 14625
+
+
+def test_flying_records_carry_your_velocity():
+    import pytest
+
+    from aion2_helper.protocol import EntityVelocity, SelfStats
+
+    rec = "1b 2a 37 a1 72 1f 03 82 6b 3e fd ad 8f c4 09 c9 71 44 32 b6 09 44 83 63"
+    (v,) = ServerStreamParser().consume(_live(rec))[0]
+    assert isinstance(v, EntityVelocity) and v.entity_id == 14625
+    assert (v.vx, v.vy, v.vz) == (pytest.approx(-1149.4, abs=0.1), pytest.approx(967.1, abs=0.1), pytest.approx(550.8, abs=0.1))
+    (st,) = ServerStreamParser().consume(frame(b"\x4a\x36\xa1\x72\x01\x05\x00\x10\x00\x00\x00" + b"\x00" * 8))[0]
+    assert st == SelfStats(14625)

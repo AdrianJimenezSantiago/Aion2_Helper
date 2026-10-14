@@ -21,6 +21,7 @@ from .protocol import (
     MapLoad,
     PlayerSpawn,
     SelfIdentity,
+    SelfStats,
     Spawn,
     Vec3,
     ZoneChange,
@@ -145,6 +146,7 @@ class CubeDetector:
         self._self_t = 0.0
         self._self_candidates: dict[int, int] = {}
         self._self_hint: int | None = None
+        self._self_from_stats = False  # self_id came from a 4a 36 stats record: nothing else may change it
         self._others: set[int] = set()  # other players: never you
         # Every id that ever spawned on this connection (monsters, objects, pets, players): never you.
         # Not cleared at a zone change, whose bundle can carry your pet's spawn just before it.
@@ -290,6 +292,8 @@ class CubeDetector:
                 self._others.add(event.entity_id)
                 if len(self._others) > 5000:
                     self._others.clear()
+            elif isinstance(event, SelfStats):
+                self._self_stats(event.entity_id, t)
             elif isinstance(event, SelfIdentity):
                 # Only a hint: what follows the 33 36 opcode is not proven to be the entity id
                 # the movement records use (a live session got 16329 there, 2348 in the moves).
@@ -383,6 +387,18 @@ class CubeDetector:
             return None
         return bearing(a, b)
 
+    def _self_stats(self, eid: int, t: float) -> None:
+        """Your own stats record names your entity for sure."""
+        self._self_from_stats = True
+        if eid == self.self_id:
+            return
+        log.info("Tu entidad (registro de estadísticas): id %s", eid)
+        self.diag.note(f"tu entidad: {eid} (estadísticas 4a 36)")
+        self.self_id = eid
+        self._self_candidates.clear()
+        self._dr = self._dr_vel = None
+        self._last_fix = None
+
     def _self_update(self, mv: EntityMove, t: float) -> None:
         """One of your own movement records: position, and what it says about where you are heading."""
         last = self._last_fix
@@ -438,18 +454,9 @@ class CubeDetector:
             return
         if mv.entity_id in self._spawned_ids:
             return
-        if mv.flags == 0x05:
-            # Your own movement record: decisive, and it corrects an earlier wrong pick.
-            if self.self_id != mv.entity_id:
-                log.info("Tu entidad (flags 05): id %s", mv.entity_id)
-                self.diag.note(f"tu entidad: {mv.entity_id} (flags 05)")
-            self.self_id = mv.entity_id
-            self._self_candidates.clear()
-            self._self_update(mv, t)
-            return
-        # Moving, yet never spawned as a monster, object or pet: maybe you. Moving where you just
-        # teleported counts much more, and so does the 05 flags byte, which in four live sessions only
-        # your own entity carried (pets and monsters 04, another player 01).
+        # Moving, yet never spawned as a monster, object or pet: maybe you; moving where you just
+        # teleported counts more. Flags 05 is not a sign: other players walking near you carry it
+        # too (a live session flipped between five entities with it). The sure sign is 4a 36.
         score = 1
         if self._teleport is not None and t - self._teleport[1] <= SELF_MATCH_S:
             if distance_2d(mv.pos, self._teleport[0]) <= SELF_MATCH_UNITS:
@@ -458,8 +465,10 @@ class CubeDetector:
         self._self_candidates[mv.entity_id] = n
         ranked = sorted(self._self_candidates.values(), reverse=True)
         second = ranked[1] if len(ranked) > 1 else 0
-        settled = self.self_id is not None and self.self_source == "servidor" and t - self._self_t < 10
-        if not settled and n == ranked[0] and n >= 10 and n >= 2 * second:
+        settled = self._self_from_stats or (
+            self.self_id is not None and self.self_source == "servidor" and t - self._self_t < 10
+        )
+        if not settled and n == ranked[0] and n >= 10 and n >= 3 * second:
             self.self_id = mv.entity_id
             log.info("Tu entidad: id %s", mv.entity_id)
             self.diag.note(f"tu entidad: {mv.entity_id} (puntuación)")
@@ -509,6 +518,7 @@ class CubeDetector:
             self.handle(ZoneChange(), t)
             self.map_number = None
             self.self_id = None
+            self._self_from_stats = False
             self._self_yaw = None
             self._moving = False
             self._last_fix = None

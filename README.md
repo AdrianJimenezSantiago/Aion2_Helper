@@ -48,7 +48,7 @@ Usa la misma técnica que los DPS meters open source del juego
   La herramienta aprende qué id corresponde a cada mapa.
 - `1a 37 <id> <2 bytes> <x> <y> <z> <yaw u16>` y `1b 37` / `1c 37 <id> <flags> [1 byte si flags & 1] <x> <y> <z> <yaw u16>`:
   una entidad se mueve, también tú. `1b` empieza a andar, `1c` informa cada ~2 m y `1a` se para; el
-  yaw (u16 × 360/65536, como `atan2(dy, dx)`) es la dirección de la marcha. Tus registros llevan flags `05`. Tu entidad se reconoce porque se mueve justo donde te
+  yaw (u16 × 360/65536, como `atan2(dy, dx)`) es la dirección de la marcha. Tu entidad se reconoce porque se mueve justo donde te
   teletransportaste. Otros opcodes con la forma `<id> <posición>` se aprenden solos.
 - `34 36 <id> <tipo> 00 <código u32> <x> <y> <z>`: aparece un **objeto** (nodos de recolección, Empyrean
   Traces y, casi seguro, los Hidden Cubes). Las posiciones coinciden al centímetro con aion2.th.gl.
@@ -57,6 +57,11 @@ Usa la misma técnica que los DPS meters open source del juego
   en unidades de 10 cm/s (los bits 0-3 de flags dicen qué campos van). Integrada entre dos posiciones
   tuyas cae a 0,18 m de mediana de la siguiente (traza en directo).
 - `20 37 <id> <flags> <5 bytes> <vx> <vy> <vz>`: velocidad en floats (cm/s), al volar.
+- `2a 37 <id> … <vx> <vy> <vz> <yaw>` y `28 37` / `29 37 <id> <2 bytes> <x> <y> <z> <vx> <vy> <vz>`: al
+  volar, velocidad (y posición) 10 veces por segundo.
+- `4a 36 <id> …`: tus estadísticas; solo llegan de tu personaje, así que su id es tu entidad. Mientras
+  no llega, tu entidad se deduce de quién se mueve sin haber aparecido como monstruo, objeto o mascota
+  (los flags `05` no sirven: otros jugadores también los llevan).
 - `2a 38` / `2b 38`: un efecto con la posición de quien lo lanza; si te lo lanzas tú (montura,
   vuelo), es tu posición, más o menos cada segundo.
 - Bloques LZ4 dentro de otros paquetes: también se abren (llevan spawns).

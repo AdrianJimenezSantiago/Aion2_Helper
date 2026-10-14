@@ -464,10 +464,15 @@ class Overlay:
         if snap.self_source == "aproximada":
             c.create_text(cx, cy + r - 32, text="posición aproximada", fill=T.WARN, font=f["tiny"])
 
-        # you
+        # you: a dot, or an arrow pointing where you are walking
         c.create_oval(cx - 9, cy - 9, cx + 9, cy + 9, fill=T.fade(T.ACCENT, 0.12, T.RADAR_BG), outline="")
-        c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill=T.fade(T.ACCENT, 0.35, T.RADAR_BG), outline="")
-        c.create_oval(cx - 2.5, cy - 2.5, cx + 2.5, cy + 2.5, fill=T.TEXT, outline="")
+        if snap.heading_deg is not None:
+            hb = self._screen_bearing(snap.heading_deg)
+            c.create_line(cx, cy, *T.polar(cx, cy, r * 0.9, hb), fill=T.fade(T.TEXT, 0.18, T.RADAR_BG), dash=(2, 6))
+            c.create_polygon(*T.arrow(cx, cy, hb, 9), fill=T.TEXT, outline=T.ACCENT)
+        else:
+            c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill=T.fade(T.ACCENT, 0.35, T.RADAR_BG), outline="")
+            c.create_oval(cx - 2.5, cy - 2.5, cx + 2.5, cy + 2.5, fill=T.TEXT, outline="")
 
         # "ping" waves where a cube just appeared
         self._pings = [p for p in self._pings if now - p.t0 < PING_S]

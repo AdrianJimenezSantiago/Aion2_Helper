@@ -338,3 +338,39 @@ def test_spawns_in_a_bundle_inside_another_packet_are_read():
     # (LZ4 keeps short data as literals, so the raw scan may see it too: same entity, no harm)
     assert {e.entity_id for e in events if isinstance(e, Spawn)} == {901}
     assert det.diag.counts["embedded_bundles"] == 1
+
+
+def test_client_position_is_learned_even_after_a_varint_counter():
+    """A counter before the position changes its offset from the start, not from the end."""
+    from aion2_helper.protocol import ZoneChange, encode_varint
+
+    det, clock = _det()
+    det.handle(ZoneChange((-18830.0, 146625.0, 35293.0)), clock.t)  # the anchor: where you landed
+    stream = b""
+    for i in range(40):
+        counter = encode_varint(100 + i * 7)  # 1 byte, then 2 bytes once past 127
+        pos = struct.pack("<fff", -18830.0 + i * 40, 146625.0 + i * 25, 35293.0)
+        stream += frame(b"\x12\x34" + counter + b"\x01" + pos + b"\x00\x00")
+    t = clock.t
+    buf = b""
+    for i in range(0, len(stream), 32):  # arrives in pieces, kept until a frame is whole
+        t += 0.1
+        buf += stream[i : i + 32]
+        buf = buf[det.tracker.feed(buf, t) :]
+        det.note_self_position()
+    assert det.tracker.locked and det.tracker.fixed_key[1] < 0
+    clock.t = t
+    snap = det.snapshot()
+    assert snap.self_source == "cliente"
+    assert snap.self_pos[0] > -18830.0 + 30 * 40
+    assert snap.heading_deg is not None and 100 < snap.heading_deg < 140  # +X (east), +Y (south): ESE
+
+
+def test_flag_1_removes_an_entity():
+    from aion2_helper.protocol import encode_varint
+
+    det = CubeDetector(Config(None))
+    events, _ = ServerStreamParser().consume(frame(spawn_body(34342, 2_100_603, (1000.0, 2000.0, 300.0))) + frame(b"\x42\x36" + encode_varint(34342) + b"\x00\x01"))
+    for e in events:
+        det.handle(e, 1.0)
+    assert det.entity_count == 0

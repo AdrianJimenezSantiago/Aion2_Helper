@@ -239,7 +239,8 @@ TELEPORT_POS_SKIP = 5
 MAP_LOAD_POS_AT = 16
 
 # Opcodes whose packets are kept as samples for diagnostics (none carries names).
-SAMPLED_OPCODES = {b"\x23\x36", b"\x21\x36", b"\x42\x36", b"\x1d\x37", b"\x1c\x37", b"\x1b\x37", b"\x1a\x37", b"\x00\x8d", b"\x00\x36"}
+SAMPLED_OPCODES = {b"\x23\x36", b"\x21\x36", b"\x42\x36", b"\x1d\x37", b"\x1c\x37", b"\x1b\x37", b"\x1a\x37",
+                   b"\x34\x36", b"\x35\x36", b"\x24\x37", b"\x44\x37"}
 
 
 def plausible_world_pos(x: float, y: float, z: float) -> bool:
@@ -391,7 +392,8 @@ class ServerStreamParser:
             flag, l3 = read_varint(packet, o + 2 + l1 + l2) if l2 > 0 else (-1, -1)
             if self.diag is not None and l3 > 0:
                 self.diag.count(f"despawn_flag_{flag}")
-            if l3 > 0 and flag in (3, 7):
+            # 3 death, 7 gone; 1 is sent when an entity leaves your view (seen live 2026-10-14).
+            if l3 > 0 and flag in (1, 3, 7):
                 events.append(Despawn(eid, flag))
                 return
         self._scan_spawns(packet, events)

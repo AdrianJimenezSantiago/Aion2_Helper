@@ -43,7 +43,7 @@ def run(detector: CubeDetector, stop: threading.Event) -> None:
     while not stop.is_set():
         t = time.time() - t0
         me = (origin[0] + 2500 * math.cos(t / 20), origin[1] + 2500 * math.sin(t / 20), origin[2])
-        tracker.position = me
+        detector._set_self(me, "cliente", time.time())
         if random.random() < 0.08:
             if random.random() < 0.3:
                 code = DEMO_CUBE_CODE if random.random() < 0.75 else DEMO_FREE_CODE

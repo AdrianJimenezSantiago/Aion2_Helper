@@ -71,7 +71,8 @@ class Snapshot:
     spots: list[SpotView]  # known spots around you, in game coordinates
     entity_count: int
     world: str = ""
-    self_source: str | None = None  # "servidor", "teletransporte", "aproximada" or "cliente"  # state of the community data, for the status line
+    self_source: str | None = None  # "servidor", "teletransporte", "aproximada" or "cliente"
+    heading_deg: float | None = None  # where you are walking (compass), when you move  # state of the community data, for the status line
     map_id: str | None = None
     map_name: str | None = None
     cube_rule: str | None = None  # "key", "mixed" or None
@@ -117,6 +118,8 @@ class CubeDetector:
         )
         self.on_learned: Callable[[int], None] | None = None
         self.diag = Diagnostics()
+        self.tracker.diag = self.diag
+        self._trail: deque[tuple[float, Vec3]] = deque(maxlen=60)  # precise positions, for your heading
         # Where you are, from the server (the client's packets are encrypted).
         self.self_source: str | None = None
         self.self_id: int | None = None
@@ -270,6 +273,20 @@ class CubeDetector:
         self.tracker.updated_at = t
         self.self_source = source
         self._self_t = t
+        if source != "aproximada":
+            self._trail.append((t, pos))
+        if source == "teletransporte":
+            self.tracker.add_anchor(pos)  # where the client must report you, too
+
+    def heading(self, now: float) -> float | None:
+        """Bearing of your last couple of seconds of movement, if you moved more than 1.5 m."""
+        recent = [(t, p) for t, p in self._trail if now - t <= 2.5]
+        if len(recent) < 2:
+            return None
+        a, b = recent[0][1], recent[-1][1]
+        if distance_2d(a, b) < 150:
+            return None
+        return bearing(a, b)
 
     def _move(self, mv: EntityMove, t: float) -> None:
         if mv.entity_id == self.self_id:
@@ -377,7 +394,14 @@ class CubeDetector:
 
     def note_self_position(self) -> None:
         """Called after client packets were fed to the tracker; persists a newly learned key."""
+        if self.tracker.locked and self.tracker.position is not None:
+            t = self.tracker.updated_at
+            if not self._trail or self._trail[-1][0] != t:
+                self._trail.append((t, self.tracker.position))
+            self.self_source = "cliente"
+            self._self_t = t
         if self.tracker.locked and not self._saved_selfpos:
+            log.info("Posición propia aprendida del cliente: %s", self.tracker.key_for_config())
             self._saved_selfpos = True
             self.config["self_position"] = self.tracker.key_for_config()
             self.config.save()
@@ -460,7 +484,8 @@ class CubeDetector:
                 (v for v in views if not v.is_cube and v.entity.code not in ignore),
                 key=key,
             )[:nearby_limit]
-            snap = Snapshot(self.status, me, self.self_known, cubes, nearby, [], len(self._entities), self.world_status, self.self_source)
+            snap = Snapshot(self.status, me, self.self_known, cubes, nearby, [], len(self._entities), self.world_status,
+                            self.self_source, self.heading(now) if self.self_source != "aproximada" else None)  # fmt: skip
             m = self.current_map
             if m is not None:
                 snap.map_id, snap.map_name, snap.cube_rule = m.map_id, m.name, m.cube_rule

@@ -37,6 +37,8 @@ class Diagnostics:
         self.recent_spawns: deque[tuple[int | None, Vec3]] = deque(maxlen=300)
         self.zone_times: deque[float] = deque(maxlen=50)
         self.samples: dict[str, deque[str]] = {}
+        self.client_opcodes: Counter[str] = Counter()
+        self.client_samples: dict[str, deque[str]] = {}
 
     def count(self, key: str, n: int = 1) -> None:
         with self._lock:
@@ -51,6 +53,15 @@ class Diagnostics:
         with self._lock:
             d = self.samples.setdefault(op.hex(" "), deque(maxlen=3))
             d.append(bytes(packet[:56]).hex(" "))
+
+    def client_packet(self, op: bytes, packet: bytes) -> None:
+        """A packet from your client (body after the length). Only the most frequent ones are shown."""
+        with self._lock:
+            key = op.hex(" ")
+            self.counts["client_frames"] += 1
+            self.client_opcodes[key] += 1
+            d = self.client_samples.setdefault(key, deque(maxlen=2))
+            d.append(f"[{len(packet)}] " + bytes(packet[:44]).hex(" "))
 
     def spawn(self, code: int | None, pos: Vec3 | None) -> None:
         with self._lock:
@@ -71,6 +82,8 @@ class Diagnostics:
             c = Counter(self.counts)
             ops = self.opcodes.most_common(8)
             samples = {k: list(v) for k, v in self.samples.items()}
+            client_ops = self.client_opcodes.most_common(6)
+            client_samples = {k: list(self.client_samples.get(k, ())) for k, _ in client_ops}
             spawns = list(self.recent_spawns)
             zones = list(self.zone_times)
         mins = max((time.time() - self.started) / 60, 1 / 60)
@@ -87,6 +100,7 @@ class Diagnostics:
             f"(flags: {', '.join(f'{k[13:]}×{n}' for k, n in sorted(c.items()) if k.startswith('despawn_flag_')) or '-'}), "
             f"cambios de zona: {c['zone_changes']} ({c['zone_changes'] / mins:.1f}/min)",
             f"Movimientos: {c['moves']} de otras entidades, {c['self_moves']} tuyos · mapas cargados: {c['map_loads']}",
+            f"Cliente: {c['client_frames']} paquetes; opcodes: " + (", ".join(f"{op}×{n}" for op, n in client_ops) or "ninguno"),
         ]
         if zones and len(zones) >= 2:
             gaps = [b - a for a, b in zip(zones, zones[1:])]
@@ -101,6 +115,11 @@ class Diagnostics:
             for op in sorted(samples):
                 for h in samples[op][-2:]:
                     lines.append(f"  [{op}] {h}")
+        if client_samples:
+            lines.append("Muestras del cliente (hex, [longitud] cuerpo):")
+            for op, hs in client_samples.items():
+                for h in hs:
+                    lines.append(f"  [{op}] {h}")
         return lines
 
     def _detector_lines(self, det: "CubeDetector", spawns: list[tuple[int | None, Vec3]]) -> list[str]:
@@ -109,6 +128,14 @@ class Diagnostics:
             f"Posición propia: {det.self_source or 'desconocida'} = {_fmt(det.tracker.position)} · "
             f"tu id de entidad: {det.self_id or 'buscando'} · id de mapa: {det.map_number if det.map_number is not None else '?'}"
         )
+        tr = det.tracker
+        if tr.locked:
+            op, off = tr.fixed_key
+            out.append(f"  desde el cliente: opcode {op.hex(' ')}, offset {off}")
+        else:
+            best = tr.best_candidates(3)
+            txt = "; ".join(f"{op.hex(' ')}@{off}: {c.samples} muestras, {c.good} suaves, {c.near_anchor} cerca" for (op, off), c in best)
+            out.append(f"  buscando en el cliente ({len(tr._candidates)} candidatos): {txt or '-'}")
         loc = det.locator
         if loc is None:
             out.append("Spots: sin datos de la comunidad (ejecuta update-spots)")

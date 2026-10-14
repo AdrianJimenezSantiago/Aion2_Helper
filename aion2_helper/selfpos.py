@@ -56,6 +56,7 @@ class SelfPositionTracker:
     position: Vec3 | None = None
     updated_at: float = 0.0
     _candidates: dict[tuple[bytes, int], _Candidate] = field(default_factory=dict)
+    diag: object | None = None  # Diagnostics, for the client stream's counters and samples
     _anchors: list[Vec3] = field(default_factory=list)
 
     @property
@@ -80,14 +81,17 @@ class SelfPositionTracker:
         return consumed
 
     def _packet(self, body: bytes, t: float) -> None:
+        op = bytes(body[0:2])
+        if self.diag is not None and len(body) >= 2:
+            self.diag.client_packet(op, body)
         if len(body) < 14:
             return
-        op = bytes(body[0:2])
         if self.fixed_key is not None:
             key_op, key_off = self.fixed_key
-            if op != key_op or key_off + 12 > len(body):
+            at = key_off if key_off >= 0 else len(body) + key_off  # negative: counted from the end
+            if op != key_op or at < 2 or at + 12 > len(body):
                 return
-            x, y, z = struct.unpack_from("<fff", body, key_off)
+            x, y, z = struct.unpack_from("<fff", body, at)
             if plausible_world_pos(x, y, z):
                 self.position = (x, y, z)
                 self.updated_at = t
@@ -100,17 +104,23 @@ class SelfPositionTracker:
             if not plausible_world_pos(x, y, z) or max(abs(x), abs(y)) < MIN_COORD:
                 continue
             pos = (x, y, z)
-            c = self._candidates.setdefault((op, off), _Candidate(first_t=t))
-            if c.last_pos is not None:
-                dt = max(t - c.last_t, 0.05)
-                if distance(pos, c.last_pos) <= MAX_SPEED * dt + 50:
-                    c.good += 1
-            c.samples += 1
-            if self._anchors and min(distance_2d(pos, a) for a in self._anchors) <= ANCHOR_RADIUS:
-                c.near_anchor += 1
-            c.last_pos = pos
-            c.last_t = t
-            self._maybe_lock((op, off), c)
+            near = bool(self._anchors) and min(distance_2d(pos, a) for a in self._anchors) <= ANCHOR_RADIUS
+            # Keyed from the start and from the end: a varint (an id, a counter) before the
+            # position moves its offset from the start, not from the end.
+            for key in ((op, off), (op, off - len(body))):
+                c = self._candidates.setdefault(key, _Candidate(first_t=t))
+                if c.last_pos is not None:
+                    dt = max(t - c.last_t, 0.05)
+                    if distance(pos, c.last_pos) <= MAX_SPEED * dt + 50:
+                        c.good += 1
+                c.samples += 1
+                if near:
+                    c.near_anchor += 1
+                c.last_pos = pos
+                c.last_t = t
+                self._maybe_lock(key, c)
+                if self.fixed_key is not None:
+                    return
 
     def _maybe_lock(self, key: tuple[bytes, int], c: _Candidate) -> None:
         if c.samples < LOCK_SAMPLES or c.last_t - c.first_t < LOCK_SPAN_S:

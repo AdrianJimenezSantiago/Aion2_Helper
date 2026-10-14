@@ -48,8 +48,8 @@ Usa la misma técnica que los DPS meters open source del juego
   La herramienta aprende qué id corresponde a cada mapa.
 - `1a 37 <id> <2 bytes> <x> <y> <z> <yaw u16>` y `1b 37` / `1c 37 <id> <flags> [1 byte si flags & 1] <x> <y> <z> <yaw u16>`:
   una entidad se mueve, también tú. `1b` empieza a andar, `1c` informa cada ~2 m y `1a` se para; el
-  yaw (u16 × 360/65536, como `atan2(dy, dx)`) es la dirección de la marcha. Tu entidad se reconoce porque se mueve justo donde te
-  teletransportaste. Otros opcodes con la forma `<id> <posición>` se aprenden solos.
+  yaw (u16 × 360/65536, como `atan2(dy, dx)`) es la dirección de la marcha.
+  Otros opcodes con la forma `<id> <posición>` se aprenden solos.
 - `34 36 <id> <tipo> 00 <código u32> <x> <y> <z>`: aparece un **objeto** (nodos de recolección, Empyrean
   Traces y, casi seguro, los Hidden Cubes). Las posiciones coinciden al centímetro con aion2.th.gl.
 - `45 36 <id> …`: aparece otro jugador. Se usa solo para no confundirlo contigo.

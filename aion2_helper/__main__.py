@@ -37,7 +37,8 @@ def _load_world(cfg: Config, detector, update: bool = True) -> None:
     opts = cfg["community"]
     if not update or not opts.get("auto_update", True):
         return
-    if data and community.age_days(data) < opts.get("max_age_days", 7):
+    fresh_enough = data and community.age_days(data) < opts.get("max_age_days", 7)
+    if fresh_enough and data.get("version", 1) >= community.DATASET_VERSION:
         return
 
     def fetch():

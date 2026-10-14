@@ -48,7 +48,7 @@ def test_parser_counts_each_stage():
     assert c["bundles"] == 1 and c["frames"] == 81 and c["spawns"] == 80 and c["zone_changes"] == 1
     assert "41 36" in dict(det.diag.opcodes)
     report = "\n".join(det.diag.report(det))
-    assert "80 con posición" in report and "Posición propia: buscando" in report
+    assert "80 con posición" in report and "Posición propia: desconocida" in report
     assert "sin datos de la comunidad" in report
 
 
@@ -61,7 +61,7 @@ def test_report_explains_map_alignment(tmp_path):
         det.handle(Spawn(i + 1, 0x0C, 2_100_000, a), 1.0)
     report = "\n".join(det.diag.report(det))
     assert "Mapa: Verteron" in report and "World_L_A/xy=" in report
-    assert "World_L_A: 20 sobre un punto fijo" in report
+    assert "World_L_A/xy: 20 sobre un punto fijo" in report
 
 
 def test_old_bare_f_key_hotkeys_are_migrated(tmp_path):
@@ -191,3 +191,90 @@ def test_segment_from_frame_handles_link_layers_and_offload():
     assert segment_from_frame(vlan + ip_tcp(b"hi"), 0).sport == 13328
     assert segment_from_frame(b"\x02\x00\x00\x00" + ip_tcp(b"hi"), 0).data == b"hi"
     assert segment_from_frame(ip_tcp(b"hi"), 0).dst == "5.6.7.8"
+
+
+def _det(world=None, **cfg):
+    from .test_detector import Clock
+
+    clock = Clock()
+    det = CubeDetector(Config(None, cfg), clock=clock)
+    if world is not None:
+        det.set_world(world)
+    return det, clock
+
+
+def test_teleport_gives_your_position_and_your_entity_is_learned():
+    from aion2_helper.protocol import EntityMove, ZoneChange
+
+    det, clock = _det()
+    det.handle(ZoneChange((100000.0, 50000.0, 3000.0)))
+    assert det.tracker.position == (100000.0, 50000.0, 3000.0) and det.self_source == "teletransporte"
+    assert det.self_precise
+    det.handle(EntityMove(4321, (100100.0, 50000.0, 3000.0)))  # near the teleport, not a spawned entity
+    det.handle(EntityMove(4321, (100250.0, 50050.0, 3000.0)))
+    assert det.self_id == 4321 and det.self_source == "servidor"
+    clock.t += 30
+    det.handle(EntityMove(4321, (120000.0, 60000.0, 3100.0)))
+    assert det.tracker.position == (120000.0, 60000.0, 3100.0)
+    assert det.snapshot().self_source == "servidor"
+
+
+def test_parser_reads_teleport_moves_and_map_load():
+    from aion2_helper.protocol import EntityMove, MapLoad, ZoneChange, encode_varint
+
+    body_tp = b"\x23\x36\x00" + struct.pack("<fff", 106149.0, 171184.0, 24189.0) + b"\x00" * 4
+    body_mv = b"\x23\x36" + encode_varint(5555) + struct.pack("<fff", 1000.0, 2000.0, 300.0)
+    body_map = b"\x21\x36" + struct.pack("<I", 1) + struct.pack("<I", 110010000) + b"\x00" * 30
+    events, _ = ServerStreamParser().consume(frame(body_tp) + frame(body_mv) + frame(body_map))
+    assert events == [ZoneChange((106149.0, 171184.0, 24189.0)), EntityMove(5555, (1000.0, 2000.0, 300.0)), MapLoad(110010000)]
+
+
+def test_map_id_is_learned_and_reused(tmp_path):
+    from aion2_helper.protocol import MapLoad
+    from aion2_helper.worldmap import WorldData
+
+    w = WorldData.from_dataset(community.build_dataset({"World_L_A": thgl_file(CUBES, ANCHORS)}, {}))
+    det, _ = _det(w, world_transform="xy")
+    det.handle(MapLoad(110010000))
+    for i, a in enumerate(ANCHORS):
+        det.handle(Spawn(i + 1, 0x0C, 2_100_000, a))
+    assert det.current_map.map_id == "World_L_A" and det.config["map_ids"] == {"110010000": "World_L_A"}
+    det.handle(MapLoad(220020000))
+    assert det.current_map is None
+    det.handle(MapLoad(110010000))
+    assert det.current_map.map_id == "World_L_A"  # known id: no vote needed
+
+
+def test_monsters_vote_by_their_own_code_with_swapped_axes():
+    from aion2_helper.worldmap import WorldData, WorldLocator, to_game
+
+    mobs = [(150000.0 + 9000 * i, 100000.0 - 7000 * i, 24000.0) for i in range(8)]
+    raw = thgl_file(CUBES, ANCHORS[:1], mobs)  # every mob there has code m_1
+    w = WorldData.from_dataset(community.build_dataset({"World_L_A": raw}, {}))
+    assert 1 in w.maps["World_L_A"].monsters
+    loc = WorldLocator(w)
+    for p in mobs:  # wandered 25 m from their spawn points, axes swapped in the packets
+        if loc.observe(to_game("yx", (p[0] + 2000, p[1] - 1500, p[2] + 150)), code=1):
+            break
+    assert (loc.map_id, loc.transform) == ("World_L_A", "yx")
+    loc2 = WorldLocator(w)
+    for p in mobs:  # another code at the same places: no vote
+        loc2.observe(to_game("yx", (p[0] + 2000, p[1] - 1500, p[2] + 150)), code=2)
+    assert loc2.map_id is None
+
+
+def test_position_is_estimated_from_entities_when_nothing_better():
+    det, clock = _det()
+    for i in range(9):
+        det.handle(Spawn(i + 1, 0x0C, 2_100_000, (50000.0 + 1000 * (i % 3), 20000.0 + 1000 * (i // 3), 500.0)))
+    snap = det.snapshot()
+    assert snap.self_source == "aproximada" and snap.self_pos == (51000.0, 21000.0, 500.0)
+    assert not det.self_precise
+
+
+def test_diagnostic_samples_known_opcodes():
+    det = CubeDetector(Config(None))
+    parser = ServerStreamParser(DEFAULT_OPCODES, det.diag)
+    parser.consume(frame(b"\x1d\x37\x01\x02\x03\x04"))
+    report = "\n".join(det.diag.report(det))
+    assert "[1d 37]" in report and "1d 37 01 02 03 04" in report

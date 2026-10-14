@@ -42,13 +42,17 @@ Usa la misma técnica que los DPS meters open source del juego
 - `41 36 <id> <mask> … <código NPC u24> 00 (00|40) 02 <x f32> <y f32> <z f32>`: spawn de NPC/objeto
   con su posición en el mundo, en unidades de Unreal (cm).
 - `42 36 <id> 00 <flag>`: muerte (flag 3) o desaparición (flag 7). Con eso el cubo se quita del radar.
-- `23 36 00`: cambio de zona. Se vacía todo.
+- `23 36 00 <x> <y> <z>`: teletransporte del jugador local (al entrar en una zona). Da tu posición
+  exacta. Con otro id, `23 36 <id> <x> <y> <z>` es la actualización de posición de esa entidad.
+- `21 36 <u32> <u32 id de mapa>`: carga de mapa. La herramienta aprende qué id corresponde a cada mapa.
 
-Tu **posición propia** no está documentada en ningún proyecto, así que la herramienta la **aprende
-sola**: busca en los paquetes que tu cliente envía al servidor el campo con tres floats que se mueven
-de forma continua y que siempre quedan cerca de las entidades que el servidor te va spawneando. Cuando
-lo encuentra lo guarda en la configuración. Hasta entonces el aviso de "cubo cerca" funciona igual,
-pero sin distancia ni flecha.
+Los paquetes que envía tu cliente van **cifrados**, así que tu **posición propia** sale del servidor:
+exacta al entrar en una zona y, después, siguiendo a tu propia entidad, que se reconoce porque sus
+actualizaciones empiezan donde te teletransportaste. Mientras no se identifica, se estima con el centro
+de las entidades que el servidor te va mostrando (radar con "posición aproximada").
+
+Los datos de aion2.th.gl guardan las coordenadas como `[y, x]` del juego (`fromInGameCoords`), y en
+su mapa +X es el este y +Y el sur. La herramienta detecta sola ese intercambio de ejes (`yx`).
 
 ## Instalación (Windows 10/11)
 
@@ -190,7 +194,7 @@ Las luces de la cabecera dicen en qué paso se queda:
 | Luz en ámbar o rojo | Qué significa |
 |---|---|
 | JUEGO | No se encuentra la conexión del juego (Npcap, permisos de administrador, VPN: prueba `--iface all`) |
-| POSICIÓN | Aún no se ha aprendido el paquete con tu posición. Muévete un rato |
+| POSICIÓN | Ámbar: posición aproximada (el centro de lo que el servidor te muestra) o desconocida. Verde: exacta |
 | SPOTS | Hay spots, pero el mapa no se reconoce todavía |
 | CÓDIGO | Aún no se ha visto ningún cubo sobre un spot conocido |
 
@@ -213,7 +217,12 @@ Cómo leer el informe:
   renumerado (ver la sección siguiente).
 - Hay spawns, pero los `votos` están vacíos y la `alineación` da medianas de decenas de metros en todos
   los mapas: las coordenadas del juego no coinciden con las de los spots.
-- `Posición propia: buscando` durante varios minutos: no se encuentra el paquete de movimiento.
+- `Posición propia`: los paquetes del cliente van cifrados, así que tu posición sale del servidor. Al
+  entrar en una zona llega exacta (`teletransporte`); después se sigue a tu entidad (`servidor`) y, si
+  aún no se ha identificado, se estima con las entidades que te rodean (`aproximada`). Con una posición
+  aproximada los spots no se tachan como revisados.
+- `Muestras (hex)`: el inicio de los últimos paquetes de varios opcodes, sin nombres. Sirven para
+  descifrar registros nuevos; inclúyelas si reportas un problema.
 
 ## Si deja de funcionar tras un parche
 
@@ -225,8 +234,7 @@ en `config.json`:
              "signatures": ["0E 00 36", "06 00 36"] }
 ```
 
-Mira qué cambian los DPS meters citados arriba y copia sus valores. Si la posición propia se aprende
-mal, borra `"self_position"` (déjalo en `null`) para que se vuelva a aprender.
+Mira qué cambian los DPS meters citados arriba y copia sus valores.
 
 Si el mapa no se reconoce nunca ("buscando mapa"), borra `"world_transform"` (déjalo en `null`) y
 ejecuta `update-spots`.

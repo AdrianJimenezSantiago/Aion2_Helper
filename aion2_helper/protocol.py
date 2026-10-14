@@ -11,7 +11,13 @@ What is known comes from the open-source DPS meters that read the same stream
     41 36 <id varint> <mask u32> ...         NPC / object / summon spawn (40 36 before June 2026)
           ... <code u24 LE> 00 (00|40) 02 <x f32> <y f32> <z f32> ...
     42 36 <id varint> <0 varint> <flag>      death (flag 3) or gone from the world (flag 7)
-    23 36 00 ...                             the local player entered a zone
+    23 36 00 <x f32> <y f32> <z f32> ...     the local player teleported (a zone load): where you are
+    23 36 <id varint> <x> <y> <z> ...        any other id: that entity's position update
+    21 36 <u32 count> <u32 map id> ...       map load, naming the map from the game's Map table
+
+The client's own packets are encrypted (A2Tools, ping_tracker.rs), so where you
+are can only come from the server: the teleport record, and updates of your own
+entity once its id is known.
 
 The position triplet after the NPC code is not used by the DPS meters; it was
 identified from their published capture samples (Unreal units, centimetres).
@@ -200,10 +206,24 @@ class Despawn:
 
 @dataclass
 class ZoneChange:
-    pass
+    pos: Vec3 | None = None  # where the local player landed
 
 
-Event = Spawn | Despawn | ZoneChange
+@dataclass
+class EntityMove:
+    entity_id: int
+    pos: Vec3
+
+
+@dataclass
+class MapLoad:
+    map_id: int
+
+
+Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad
+
+# Opcodes whose packets are kept as samples for diagnostics (none carries names).
+SAMPLED_OPCODES = {b"\x23\x36", b"\x21\x36", b"\x42\x36", b"\x1d\x37", b"\x1c\x37", b"\x1b\x37", b"\x1a\x37", b"\x00\x8d", b"\x00\x36"}
 
 
 def plausible_world_pos(x: float, y: float, z: float) -> bool:
@@ -251,6 +271,7 @@ class Opcodes:
     despawn: list[bytes]
     zone_change: list[bytes]
     signatures: list[bytes]
+    map_load: list[bytes] = field(default_factory=lambda: [b"\x21\x36"])
 
     @staticmethod
     def _parse(codes: list[str]) -> list[bytes]:
@@ -263,6 +284,7 @@ class Opcodes:
             despawn=cls._parse(cfg.get("despawn", ["42 36"])),
             zone_change=cls._parse(cfg.get("zone_change", ["23 36"])),
             signatures=cls._parse(cfg.get("signatures", ["0E 00 36", "06 00 36"])),
+            map_load=cls._parse(cfg.get("map_load", ["21 36"])),
         )
 
 
@@ -311,13 +333,26 @@ class ServerStreamParser:
         if self.diag is not None:
             self.diag.count("frames")
             self.diag.opcode(op)
-        if op in self.op.zone_change and o + 2 < len(packet) and packet[o + 2] == 0x00:
-            events.append(ZoneChange())
+            if op in SAMPLED_OPCODES:
+                self.diag.sample(op, packet)
+        if op in self.op.zone_change:
+            eid, l1 = read_varint(packet, o + 2)
+            pos = _read_pos(packet, o + 2 + l1) if l1 > 0 else None
+            if eid == 0 and l1 > 0:
+                events.append(ZoneChange(pos))
+                return
+            if l1 > 0 and pos is not None and 1 <= eid <= MAX_ENTITY_ID:
+                events.append(EntityMove(eid, pos))
+                return
+        if op in self.op.map_load and o + 10 <= len(packet):
+            events.append(MapLoad(struct.unpack_from("<I", packet, o + 6)[0]))
             return
         if op in self.op.despawn:
             eid, l1 = read_varint(packet, o + 2)
             _, l2 = read_varint(packet, o + 2 + max(l1, 0)) if l1 > 0 else (-1, -1)
             flag, l3 = read_varint(packet, o + 2 + l1 + l2) if l2 > 0 else (-1, -1)
+            if self.diag is not None and l3 > 0:
+                self.diag.count(f"despawn_flag_{flag}")
             if l3 > 0 and flag in (3, 7):
                 events.append(Despawn(eid, flag))
                 return

@@ -41,6 +41,10 @@ MAPS: dict[str, tuple[str, str | None]] = {
 MATCH_RADIUS = 300.0
 # ... and its height differs by at most this much.
 MATCH_HEIGHT = 500.0
+# A monster within this of a spawn point of its own NPC code (2D, height) votes for that map:
+# monsters wander from where they spawn, but rarely this far.
+MONSTER_RADIUS = 6000.0
+MONSTER_HEIGHT = 1500.0
 # A cube entity this close to a cube spot (2D) is at that spot.
 CUBE_SPOT_RADIUS = 300.0
 
@@ -135,6 +139,7 @@ class MapData:
     map_id: str
     cubes: GridIndex
     anchors: GridIndex
+    monsters: dict[int, GridIndex] = field(default_factory=dict)  # spawn points by NPC code
 
     @property
     def name(self) -> str:
@@ -157,8 +162,14 @@ class WorldData:
         for map_id, m in data.get("maps", {}).items():
             cubes = [tuple(p) for p in m.get("cubes", [])]
             anchors = [tuple(p) for p in m.get("anchors", [])] + cubes
+            monsters = {}
+            for code, pts in (m.get("monsters") or {}).items():
+                try:
+                    monsters[int(code)] = GridIndex([tuple(p) for p in pts], cell=8000.0)
+                except (TypeError, ValueError):
+                    continue
             if anchors:
-                maps[map_id] = MapData(map_id, GridIndex(cubes), GridIndex(anchors))
+                maps[map_id] = MapData(map_id, GridIndex(cubes), GridIndex(anchors), monsters)
         return cls(maps, data.get("source", ""), data.get("fetched", ""))
 
     @property
@@ -206,8 +217,8 @@ class WorldLocator:
     def top_scores(self, n: int = 4) -> list[tuple[tuple[str, str], int]]:
         return sorted(self._scores.items(), key=lambda kv: -kv[1])[:n]
 
-    def observe(self, pos: Vec3) -> bool:
-        """Feeds an entity position. Returns True when this located (or changed) the map."""
+    def observe(self, pos: Vec3, code: int | None = None) -> bool:
+        """Feeds an entity position (and its NPC code). Returns True when this located (or changed) the map."""
         self.observed += 1
         names = [self.transform] if self.transform else list(TRANSFORMS)
         hits, hits_2d = [], []
@@ -219,6 +230,11 @@ class WorldLocator:
                     hits_2d.append((map_id, name))
                     if any(abs(m.anchors.points[i][2] - p[2]) <= MATCH_HEIGHT for i in near):
                         hits.append((map_id, name))
+                        continue
+                spawns = m.monsters.get(code) if code is not None else None
+                if spawns is not None and spawns.within(p, MONSTER_RADIUS, MONSTER_HEIGHT):
+                    hits.append((map_id, name))
+                    hits_2d.append((map_id, name))
         if len(self._window) == self._window.maxlen:
             old, old_2d = self._window[0]
             for k in old:

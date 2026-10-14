@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import theme as T
-from .detector import CubeDetector, Entity, EntityView, Snapshot
+from .detector import CubeDetector, Entity, EntityView, Snapshot, bearing
 from .protocol import Vec3
 
 W = 320
@@ -343,7 +343,7 @@ class Overlay:
         # status lights
         st = snap.status
         game = T.OK if st.startswith(("Conectado", "DEMO", "Reproducción")) else T.WARN if st.startswith("Buscando") else T.MUTED
-        pos = T.OK if snap.self_learned else T.WARN
+        pos = T.OK if snap.self_learned and snap.self_source != "aproximada" else T.WARN
         spots = T.OK if snap.map_name else T.WARN if self.detector.world is not None else T.BAD
         learning = not self.config["cube_codes"] and n == 0
         lights = [("JUEGO", game), ("POSICIÓN", pos), ("SPOTS", spots)]
@@ -422,7 +422,7 @@ class Overlay:
 
         def plot(p: Vec3) -> tuple[float, float, bool, float]:
             dist = math.hypot(p[0] - me[0], p[1] - me[1]) / upm
-            b = self._screen_bearing(math.degrees(math.atan2(p[1] - me[1], p[0] - me[0])))
+            b = self._screen_bearing(bearing(me, p))
             clipped = dist > rng
             x, y = T.polar(cx, cy, r if clipped else r * dist / rng, b)
             return x, y, clipped, b
@@ -460,6 +460,9 @@ class Overlay:
                     x, y, clipped, _ = plot(v.entity.pos)
                     if not clipped:
                         c.create_oval(x - 2, y - 2, x + 2, y + 2, fill=T.FAINT, outline="")
+
+        if snap.self_source == "aproximada":
+            c.create_text(cx, cy + r - 32, text="posición aproximada", fill=T.WARN, font=f["tiny"])
 
         # you
         c.create_oval(cx - 9, cy - 9, cx + 9, cy + 9, fill=T.fade(T.ACCENT, 0.12, T.RADAR_BG), outline="")

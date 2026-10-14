@@ -6,13 +6,14 @@ import json
 import math
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TextIO
 
 from .config import Config
 from .diag import Diagnostics, log
-from .protocol import Despawn, Event, Spawn, Vec3, ZoneChange
+from .protocol import Despawn, EntityMove, Event, MapLoad, Spawn, Vec3, ZoneChange
 from .selfpos import SelfPositionTracker, distance, distance_2d
 from .spots import SpotStore
 from .worldmap import (
@@ -28,6 +29,14 @@ from .worldmap import (
 )
 
 MAX_ENTITIES = 5000
+# Your own entity: a position update this close (units) to where you just teleported ...
+SELF_MATCH_UNITS = 500.0
+# ... within this many seconds of the teleport, twice.
+SELF_MATCH_S = 20.0
+# A teleport position stays good this long; after it, without updates of your
+# own entity, your position is estimated from the entities around you.
+TELEPORT_FRESH_S = 8.0
+APPROX_WINDOW_S = 30.0
 # Tagging picks the entity nearest to you, but only within this many metres.
 TAG_RADIUS_M = 8.0
 
@@ -61,7 +70,8 @@ class Snapshot:
     nearby: list[EntityView]
     spots: list[SpotView]  # known spots around you, in game coordinates
     entity_count: int
-    world: str = ""  # state of the community data, for the status line
+    world: str = ""
+    self_source: str | None = None  # "servidor", "teletransporte", "aproximada" or "cliente"  # state of the community data, for the status line
     map_id: str | None = None
     map_name: str | None = None
     cube_rule: str | None = None  # "key", "mixed" or None
@@ -70,8 +80,12 @@ class Snapshot:
 
 
 def bearing(src: Vec3, dst: Vec3) -> float:
-    """Compass bearing from src to dst, with +X as north and +Y as east."""
-    return math.degrees(math.atan2(dst[1] - src[1], dst[0] - src[0])) % 360
+    """Compass bearing from src to dst (0 = north, clockwise), as on the game's map.
+
+    The game's map (and aion2.th.gl, whose ``fromInGameCoords`` turns an in-game
+    (x, y) into map (y, x) drawn with y growing downwards) has +X to the east and
+    +Y to the south. ``radar_rotation_deg`` still turns it if needed."""
+    return math.degrees(math.atan2(dst[0] - src[0], -(dst[1] - src[1]))) % 360
 
 
 class CubeDetector:
@@ -103,6 +117,14 @@ class CubeDetector:
         )
         self.on_learned: Callable[[int], None] | None = None
         self.diag = Diagnostics()
+        # Where you are, from the server (the client's packets are encrypted).
+        self.self_source: str | None = None
+        self.self_id: int | None = None
+        self.map_number: int | None = None
+        self._teleport: tuple[Vec3, float] | None = None
+        self._self_t = 0.0
+        self._self_candidates: dict[int, int] = {}
+        self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
 
     @property
     def entity_count(self) -> int:
@@ -139,16 +161,21 @@ class CubeDetector:
             self.world_status = f"{world.cube_count} spots de {world.source} · buscando mapa"
             for e in list(self._entities.values()):
                 if e.pos is not None:
-                    self._locate(e.pos)
+                    self._locate(e.pos, e.code)
 
     @property
     def current_map(self) -> MapData | None:
         return self.locator.map if self.locator else None
 
-    def _locate(self, pos: Vec3) -> None:
-        if self.locator is None or not self.locator.observe(pos):
+    def _locate(self, pos: Vec3, code: int | None = None) -> None:
+        if self.locator is None or not self.locator.observe(pos, code):
             return
         m = self.locator.map
+        if self.map_number is not None:
+            known = dict(self.config["map_ids"])
+            if known.get(str(self.map_number)) != m.map_id:
+                known[str(self.map_number)] = m.map_id
+                self.config["map_ids"] = known
         self.world_status = f"Mapa: {m.name} ({len(m.cubes)} spots)"
         log.info("Mapa reconocido: %s (ejes %s, altura %s)", m.map_id, self.locator.transform, self.locator.height is not None)
         if self.config["world_transform"] != self.locator.transform:
@@ -206,13 +233,101 @@ class CubeDetector:
                 self.diag.zone(t)
                 self._entities.clear()
                 self.tracker.clear_anchors()
-                self._write({"type": "zone", "t": t})
+                self._recent.clear()
+                if event.pos is not None:
+                    self._teleport = (event.pos, t)
+                    self.self_id = None
+                    self._self_candidates.clear()
+                    self._set_self(event.pos, "teletransporte", t)
+                self._write({"type": "zone", "t": t, "pos": event.pos})
+            elif isinstance(event, EntityMove):
+                self._move(event, t)
+            elif isinstance(event, MapLoad):
+                self._map_load(event.map_id, t)
+
+    # ───── where you are ─────
+
+    @property
+    def self_known(self) -> bool:
+        return self.tracker.position is not None and (self.tracker.locked or self.self_source is not None)
+
+    @property
+    def self_precise(self) -> bool:
+        """Good enough to mark spots as checked (not an estimate, not an old teleport)."""
+        if self.tracker.locked or self.self_source == "servidor":
+            return True
+        return self.self_source == "teletransporte" and self._teleport is not None and self.clock() - self._teleport[1] < TELEPORT_FRESH_S
+
+    def _set_self(self, pos: Vec3, source: str, t: float) -> None:
+        self.tracker.position = pos
+        self.tracker.updated_at = t
+        self.self_source = source
+        self._self_t = t
+
+    def _move(self, mv: EntityMove, t: float) -> None:
+        if mv.entity_id == self.self_id:
+            self.diag.count("self_moves")
+            self._set_self(mv.pos, "servidor", t)
+            return
+        self.diag.count("moves")
+        self._recent.append((t, mv.pos))
+        e = self._entities.get(mv.entity_id)
+        if e is not None:
+            e.pos = mv.pos
+            e.last_seen = t
+            return
+        # Not a spawned entity: maybe you. Your own updates start where you teleported.
+        if self._teleport is not None and t - self._teleport[1] <= SELF_MATCH_S:
+            if distance_2d(mv.pos, self._teleport[0]) <= SELF_MATCH_UNITS:
+                n = self._self_candidates.get(mv.entity_id, 0) + 1
+                self._self_candidates[mv.entity_id] = n
+                if n >= 2:
+                    self.self_id = mv.entity_id
+                    log.info("Tu entidad: id %s", mv.entity_id)
+                    self._set_self(mv.pos, "servidor", t)
+
+    def _map_load(self, number: int, t: float) -> None:
+        self.diag.count("map_loads")
+        self._write({"type": "map_load", "t": t, "map": number})
+        if number == self.map_number:
+            return
+        log.info("Carga de mapa: id %s", number)
+        self.map_number = number
+        if self.locator is None:
+            return
+        self.locator.reset()
+        known = self.config["map_ids"].get(str(number))
+        if known in self.world.maps:
+            self.locator.map_id = known
+            m = self.locator.map
+            self.world_status = f"Mapa: {m.name} ({len(m.cubes)} spots)"
+        else:
+            self.world_status = f"{self.world.cube_count} spots de {self.world.source} · buscando mapa"
+
+    def _estimate_self(self, now: float) -> None:
+        """Without a fresh position from the server, the middle of what the server shows you."""
+        if self.tracker.locked:
+            self.self_source = "cliente"
+            return
+        if self.self_source in ("servidor", "cliente") and now - self._self_t < 10:
+            return
+        if self.self_source == "teletransporte" and self._teleport and now - self._teleport[1] < TELEPORT_FRESH_S:
+            return
+        pts = [p for tt, p in self._recent if now - tt <= APPROX_WINDOW_S]
+        pts += [e.pos for e in self._entities.values() if e.pos is not None and now - e.last_seen <= APPROX_WINDOW_S]
+        if len(pts) < 5:
+            return
+        xs, ys, zs = sorted(p[0] for p in pts), sorted(p[1] for p in pts), sorted(p[2] for p in pts)
+        mid = len(pts) // 2
+        self._set_self((xs[mid], ys[mid], zs[mid]), "aproximada", self._self_t)
 
     def new_connection(self, t: float | None = None) -> None:
         """A new game connection: entity ids start over, and so may the map."""
         with self._lock:
             self.learner.new_session()
             self.handle(ZoneChange(), t)
+            self.map_number = None
+            self.self_id = None
             if self.locator:
                 self.locator.reset()
                 self.world_status = f"{self.world.cube_count} spots de {self.world.source} · buscando mapa"
@@ -239,14 +354,15 @@ class CubeDetector:
             }
         )
         if sp.pos is not None:
-            self._locate(sp.pos)
+            self._locate(sp.pos, sp.code)
+            self._recent.append((t, sp.pos))
         if old is None:
             self._learn(e)
         if old is None and self.is_cube(e):
             if e.pos is not None:
                 self.spots.add(e.pos, e.code, t)
                 me = self.tracker.position
-                if me is not None and self.tracker.locked:
+                if me is not None and self.self_precise:
                     self.spot_tracker.cube_appeared(distance_2d(me, e.pos) / self.config["units_per_meter"])
             if self.on_new_cube:
                 self.on_new_cube(e)
@@ -316,6 +432,7 @@ class CubeDetector:
             ttl = self.config["cube_ttl_s"]
             for e in [e for e in self._entities.values() if self.is_cube(e) and now - e.last_seen > ttl]:
                 del self._entities[e.entity_id]
+            self._estimate_self(now)
             me = self.tracker.position
             upm = self.config["units_per_meter"]
             ignore = set(self.config["ignore_codes"])
@@ -335,7 +452,7 @@ class CubeDetector:
                 (v for v in views if not v.is_cube and v.entity.code not in ignore),
                 key=key,
             )[:nearby_limit]
-            snap = Snapshot(self.status, me, self.tracker.locked, cubes, nearby, [], len(self._entities), self.world_status)
+            snap = Snapshot(self.status, me, self.self_known, cubes, nearby, [], len(self._entities), self.world_status, self.self_source)
             m = self.current_map
             if m is not None:
                 snap.map_id, snap.map_name, snap.cube_rule = m.map_id, m.name, m.cube_rule
@@ -353,7 +470,7 @@ class CubeDetector:
         upm = self.config["units_per_meter"]
         me_d = to_data(tf, me)
         occupied = {i for v in cubes if v.entity.pos is not None and (i := self._cube_spot(v.entity.pos)) is not None}
-        if self.tracker.locked:
+        if self.self_precise:
             self.spot_tracker.update(m, me_d, occupied, now)
         best: tuple[float, int] | None = None
         for i, p in enumerate(m.cubes.points):

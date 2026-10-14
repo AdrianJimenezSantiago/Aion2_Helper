@@ -20,6 +20,8 @@ DEFAULTS: dict = {
     "cube_kinds": {},
     # Community spots (aion2.th.gl): downloaded at start-up when missing or older than this.
     "community": {"auto_update": True, "max_age_days": 7},
+    # The game's numeric map ids (map-load record) -> community map, learned as maps are recognised.
+    "map_ids": {},
     # Axis convention between packets and community data; found by itself (expected "xy").
     "world_transform": None,
     # A known spot you come this close to without a cube on it counts as checked (refined by itself) ...

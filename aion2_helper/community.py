@@ -34,7 +34,7 @@ from . import cborx
 SOURCE = "aion2.th.gl"
 MAP_PAGE = "https://aion2.th.gl/maps/Verteron"
 CDN = "https://cdn.th.gl/aion2"
-USER_AGENT = "Aion2Helper/0.3.3 (+https://github.com/adrianjimenezsantiago/aion2_helper)"
+USER_AGENT = "Aion2Helper/0.4.0 (+https://github.com/adrianjimenezsantiago/aion2_helper)"
 NODES_RE = re.compile(r"/nodes/(World_[A-Za-z_]+)\.([0-9a-f]{16,64})\.raw")
 # Known files at the time of writing, used only if the map page cannot be read.
 FALLBACK_PATHS = {
@@ -49,6 +49,8 @@ CUBE_TYPE = "hidden_cube"
 # Points that move or cover an area are no good for telling maps apart.
 NOT_ANCHORS = ("monsters_", "field_boss")
 MAX_DOWNLOAD = 20_000_000
+# 2: monster spawn points by NPC code, for telling maps apart.
+DATASET_VERSION = 2
 
 
 def dataset_path(config_path: Path | None) -> Path:
@@ -130,11 +132,22 @@ def _points(group: dict) -> list[list[float]]:
 
 def parse_nodes(raw: bytes) -> tuple[list[list[float]], list[list[float]]]:
     """(cube spots, anchors) of one map file."""
+    cubes, anchors, _ = parse_nodes_full(raw)
+    return cubes, anchors
+
+
+def parse_nodes_full(raw: bytes) -> tuple[list[list[float]], list[list[float]], dict[str, list[list[float]]]]:
+    """(cube spots, anchors, monster spawn points by NPC code) of one map file.
+
+    Monsters are no good as exact anchors (they wander), but a monster of code C
+    showing up near a spawn point of C is strong evidence for the map: the NPC
+    codes in the data are the ones the spawn packets carry (``m_2100699``)."""
     doc = cborx.loads(raw)
     if not isinstance(doc, list):
         raise ValueError("formato inesperado: se esperaba una lista de grupos")
     cubes: list[list[float]] = []
     anchors: list[list[float]] = []
+    monsters: dict[str, list[list[float]]] = {}
     for g in doc:
         if not isinstance(g, dict):
             continue
@@ -143,16 +156,21 @@ def parse_nodes(raw: bytes) -> tuple[list[list[float]], list[list[float]]]:
             cubes += _points(g)
         elif not kind.startswith(NOT_ANCHORS):
             anchors += _points(g)
-    return cubes, anchors
+        else:
+            for s in g.get("spawns") or []:
+                code = s.get("dbEntryId") if isinstance(s, dict) else None
+                if isinstance(code, str) and code.startswith("m_") and code[2:].isdigit():
+                    monsters.setdefault(code[2:], []).extend(_points({"spawns": [s]}))
+    return cubes, anchors, monsters
 
 
 def build_dataset(raw_by_map: dict[str, bytes], files: dict[str, str]) -> dict:
     maps = {}
     for map_id, raw in raw_by_map.items():
-        cubes, anchors = parse_nodes(raw)
-        maps[map_id] = {"cubes": cubes, "anchors": anchors}
+        cubes, anchors, monsters = parse_nodes_full(raw)
+        maps[map_id] = {"cubes": cubes, "anchors": anchors, "monsters": monsters}
     return {
-        "version": 1,
+        "version": DATASET_VERSION,
         "source": SOURCE,
         "fetched": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "files": files,

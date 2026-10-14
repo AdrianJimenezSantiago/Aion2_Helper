@@ -41,7 +41,7 @@ def test_cube_appears_alerts_once_and_goes(tmp_path):
     snap = det.snapshot()
     assert [v.entity.entity_id for v in snap.cubes] == [1]
     assert snap.cubes[0].distance_m == 10.0
-    assert snap.cubes[0].bearing_deg == 0.0
+    assert snap.cubes[0].bearing_deg == 90.0  # +X is east on the game map
     assert len(snap.spots) == 1
     det.handle(Despawn(1, 7))
     assert det.snapshot().cubes == []
@@ -124,3 +124,13 @@ def test_analyze_ranks_cube_code(tmp_path):
         recs.append({"type": "mark", "t": base + 30, "self": me})
     log.write_text("\n".join(json.dumps(r) for r in recs))
     assert analyze.rank(analyze.load(log))[0][0] == CUBE
+
+
+def test_bearing_follows_the_game_map():
+    from aion2_helper.detector import bearing
+
+    o = (0.0, 0.0, 0.0)
+    assert bearing(o, (0.0, -100.0, 0.0)) == 0.0  # -Y: north
+    assert bearing(o, (100.0, 0.0, 0.0)) == 90.0  # +X: east
+    assert bearing(o, (0.0, 100.0, 0.0)) == 180.0  # +Y: south
+    assert bearing(o, (-100.0, 0.0, 0.0)) == 270.0  # -X: west

@@ -36,6 +36,7 @@ class Diagnostics:
         self.opcodes: Counter[str] = Counter()
         self.recent_spawns: deque[tuple[int | None, Vec3]] = deque(maxlen=300)
         self.zone_times: deque[float] = deque(maxlen=50)
+        self.samples: dict[str, deque[str]] = {}
 
     def count(self, key: str, n: int = 1) -> None:
         with self._lock:
@@ -44,6 +45,12 @@ class Diagnostics:
     def opcode(self, op: bytes) -> None:
         with self._lock:
             self.opcodes[op.hex(" ")] += 1
+
+    def sample(self, op: bytes, packet: bytes) -> None:
+        """Keeps the start of the last few packets of an opcode (hex), to decode new records."""
+        with self._lock:
+            d = self.samples.setdefault(op.hex(" "), deque(maxlen=3))
+            d.append(bytes(packet[:56]).hex(" "))
 
     def spawn(self, code: int | None, pos: Vec3 | None) -> None:
         with self._lock:
@@ -63,6 +70,7 @@ class Diagnostics:
         with self._lock:
             c = Counter(self.counts)
             ops = self.opcodes.most_common(8)
+            samples = {k: list(v) for k, v in self.samples.items()}
             spawns = list(self.recent_spawns)
             zones = list(self.zone_times)
         mins = max((time.time() - self.started) / 60, 1 / 60)
@@ -74,8 +82,10 @@ class Diagnostics:
             f"Tramas: {c['frames']} paquetes, {c['bundles']} bloques LZ4 ({c['bundle_fail']} fallidos), "
             f"{c['resync']} bytes de resincronización",
             "Opcodes más frecuentes: " + (", ".join(f"{op}×{n}" for op, n in ops) or "ninguno"),
-            f"Spawns: {c['spawns']} ({c['spawns_with_pos']} con posición), {c['despawns']} bajas, "
+            f"Spawns: {c['spawns']} ({c['spawns_with_pos']} con posición), {c['despawns']} bajas "
+            f"(flags: {', '.join(f'{k[13:]}×{n}' for k, n in sorted(c.items()) if k.startswith('despawn_flag_')) or '-'}), "
             f"cambios de zona: {c['zone_changes']} ({c['zone_changes'] / mins:.1f}/min)",
+            f"Movimientos: {c['moves']} de otras entidades, {c['self_moves']} tuyos · mapas cargados: {c['map_loads']}",
         ]
         if zones and len(zones) >= 2:
             gaps = [b - a for a, b in zip(zones, zones[1:])]
@@ -85,18 +95,19 @@ class Diagnostics:
             lines.append(f"Último spawn: código {code} en ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f})")
         if detector is not None:
             lines += self._detector_lines(detector, spawns)
+        if samples:
+            lines.append("Muestras (hex):")
+            for op in sorted(samples):
+                for h in samples[op][-2:]:
+                    lines.append(f"  [{op}] {h}")
         return lines
 
     def _detector_lines(self, det: "CubeDetector", spawns: list[tuple[int | None, Vec3]]) -> list[str]:
         out = [f"Estado: {det.status} · entidades vivas: {det.entity_count}"]
-        tr = det.tracker
-        if tr.locked:
-            op, off = tr.fixed_key
-            out.append(f"Posición propia: aprendida (opcode {op.hex(' ')}, offset {off}) = {_fmt(tr.position)}")
-        else:
-            best = tr.best_candidates(3)
-            txt = "; ".join(f"{op.hex(' ')}@{off}: {c.samples} muestras, {c.good} suaves, {c.near_anchor} cerca" for (op, off), c in best)
-            out.append(f"Posición propia: buscando ({len(tr._candidates)} candidatos) {txt}")
+        out.append(
+            f"Posición propia: {det.self_source or 'desconocida'} = {_fmt(det.tracker.position)} · "
+            f"tu id de entidad: {det.self_id or 'buscando'} · id de mapa: {det.map_number if det.map_number is not None else '?'}"
+        )
         loc = det.locator
         if loc is None:
             out.append("Spots: sin datos de la comunidad (ejecuta update-spots)")
@@ -121,26 +132,29 @@ def _alignment(det: "CubeDetector", positions: list[Vec3]) -> list[str]:
     """How close recent spawns sit to each map's fixed points: tells a wrong map from wrong coordinates."""
     from .worldmap import MATCH_HEIGHT, MATCH_RADIUS, to_data
 
-    tf = det.locator.transform or "xy"
+    from .worldmap import TRANSFORMS
+
     rows = []
-    for map_id, m in det.world.maps.items():
-        if not len(m.anchors):
-            continue
-        dists, hits = [], 0
-        for p in positions:
-            q = to_data(tf, p)
-            i = m.anchors.nearest(q, 20000.0)
-            if i is None:
+    for tf in [det.locator.transform] if det.locator.transform else list(TRANSFORMS):
+        for map_id, m in det.world.maps.items():
+            if not len(m.anchors):
                 continue
-            a = m.anchors.points[i]
-            d = ((a[0] - q[0]) ** 2 + (a[1] - q[1]) ** 2) ** 0.5
-            dists.append(d)
-            if d <= MATCH_RADIUS and abs(a[2] - q[2]) <= MATCH_HEIGHT:
-                hits += 1
-        if dists:
-            rows.append((hits, map_id, statistics.median(dists) / 100, len(dists)))
+            dists, hits = [], 0
+            for p in positions:
+                q = to_data(tf, p)
+                i = m.anchors.nearest(q, 20000.0)
+                if i is None:
+                    continue
+                a = m.anchors.points[i]
+                d = ((a[0] - q[0]) ** 2 + (a[1] - q[1]) ** 2) ** 0.5
+                dists.append(d)
+                if d <= MATCH_RADIUS and abs(a[2] - q[2]) <= MATCH_HEIGHT:
+                    hits += 1
+            if dists:
+                rows.append((hits, -statistics.median(dists), f"{map_id}/{tf}", statistics.median(dists) / 100, len(dists)))
     rows.sort(reverse=True)
-    out = [f"  alineación ({tf}, {len(positions)} spawns recientes):"]
+    rows = [(h, name, med, n) for h, _, name, med, n in rows]
+    out = [f"  alineación ({len(positions)} posiciones recientes, mejores mapa/ejes):"]
     for hits, map_id, med, n in rows[:3]:
         out.append(f"    {map_id}: {hits} sobre un punto fijo, {n} a <200 m de alguno, mediana {med:.1f} m")
     if not rows:

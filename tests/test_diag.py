@@ -637,3 +637,69 @@ def test_trace_exists_from_the_start_and_keeps_movement_while_you_are_unknown(tm
     body = (tmp_path / "logs" / "selftrace.txt").read_text().splitlines()[3:]  # after the 3-line header
     assert [l.split()[1:3] for l in body[:2]] == [["1d", "37"], ["23", "36"]]
     assert body[2].endswith("tu entidad: 949 (flags 05)") and len(body) == 3
+
+
+def _replay_trace(path, self_id=None):
+    import math
+    from pathlib import Path
+
+    from aion2_helper.protocol import EntityMove
+
+    from .test_detector import Clock
+
+    clock = Clock()
+    det = CubeDetector(Config(None), clock=clock)
+    if self_id is not None:
+        det.self_id = self_id
+    parser = ServerStreamParser()
+    errors = []
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("#"):
+            continue
+        p = line.split()
+        t = float(p[0])
+        clock.t = t
+        for e in parser.consume(bytes.fromhex("".join(p[4:])))[0]:
+            if isinstance(e, EntityMove) and e.entity_id == det.self_id and det._dr is not None and det._dr_vel is not None:
+                est = det._dr_estimate(t)
+                errors.append(math.hypot(est[0] - e.pos[0], est[1] - e.pos[1]) / 100)
+            det.handle(e, t)
+    return det, errors
+
+
+def test_live_velocity_records_decode():
+    import pytest
+
+    from aion2_helper.protocol import EntityVelocity
+
+    (v,) = ServerStreamParser().consume(_live("11 1d 37 ca 03 2f 03 d1 52 1e 50 55 50 55"))[0]
+    assert isinstance(v, EntityVelocity) and v.entity_id == 458
+    assert (v.vx, v.vy, v.vz) == (-470.0, 820.0, 300.0)  # 10 cm/s units
+    assert v.yaw == pytest.approx(120.0, abs=0.1)
+    (m,) = ServerStreamParser().consume(_live("11 1d 37 dc 90 02 26 f7 02 02 74 02 74 01"))[0]  # a monster: no mode byte
+    assert (m.vx, m.vy, m.vz) == (-90.0, 20.0, None)
+    (f,) = ServerStreamParser().consume(_live("1b 20 37 a1 72 0b a4 36 56 27 69 28 99 5d c4 2c d0 03 44 bf b0 32 44 01"))[0]
+    assert (round(f.vx), round(f.vy), round(f.vz)) == (-886, 527, 715)  # flying, floats
+
+
+def test_live_effect_on_yourself_gives_your_position():
+    import pytest
+
+    from aion2_helper.protocol import EntityMove
+
+    rec = ("33 2b 38 ca 03 13 fe 4a b3 93 d7 0a 60 09 00 00 00 00 00 00 41 64 f5 3a a1 01 00 00 ca 03 0a c5 8e 15 01 02"
+           " 5c 5c 18 47 17 04 9f 46 58 78 18 47")
+    (mv,) = ServerStreamParser().consume(_live(rec))[0]
+    assert isinstance(mv, EntityMove) and mv.entity_id == 458
+    assert mv.pos == pytest.approx((39004.4, 20354.0, 39032.3), abs=0.1)
+
+
+def test_live_walk_is_followed_between_fixes():
+    """Replays a live trace: the dead-reckoned point lands near every next fix of yours."""
+    from pathlib import Path
+
+    det, errors = _replay_trace(Path(__file__).parent / "data" / "selftrace_walk.txt", self_id=458)
+    assert len(errors) >= 5
+    errors.sort()
+    assert errors[len(errors) // 2] < 0.6  # metres, median
+    assert errors[-1] < 3.0

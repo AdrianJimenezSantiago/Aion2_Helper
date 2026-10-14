@@ -53,13 +53,20 @@ Usa la misma técnica que los DPS meters open source del juego
 - `34 36 <id> <tipo> 00 <código u32> <x> <y> <z>`: aparece un **objeto** (nodos de recolección, Empyrean
   Traces y, casi seguro, los Hidden Cubes). Las posiciones coinciden al centímetro con aion2.th.gl.
 - `45 36 <id> …`: aparece otro jugador. Se usa solo para no confundirlo contigo.
+- `1d 37 <id> <flags> [modo] [vx] [vy] [vz] <yaw> <yaw> [01]`: la **velocidad**, 10 veces por segundo,
+  en unidades de 10 cm/s (los bits 0-3 de flags dicen qué campos van). Integrada entre dos posiciones
+  tuyas cae a 0,18 m de mediana de la siguiente (traza en directo).
+- `20 37 <id> <flags> <5 bytes> <vx> <vy> <vz>`: velocidad en floats (cm/s), al volar.
+- `2a 38` / `2b 38`: un efecto con la posición de quien lo lanza; si te lo lanzas tú (montura,
+  vuelo), es tu posición, más o menos cada segundo.
 - Bloques LZ4 dentro de otros paquetes: también se abren (llevan spawns).
 
 Los paquetes que envía tu cliente van **cifrados por completo** (comprobado en directo), así que tu
 **posición propia** sale del servidor: exacta al entrar en una zona y, después, de los registros de
 movimiento de tu propia entidad, que el servidor envía al empezar a moverte, girar o pararte. Mientras
 no se identifica tu entidad, se estima con el centro de las entidades que el servidor te va mostrando
-(radar con "posición aproximada"). Entre un registro y el siguiente, el radar desliza tu posición con
+(radar con "posición aproximada"). Con tu entidad reconocida, tu posición avanza con cada registro
+de velocidad (10 por segundo) y se corrige con cada posición exacta. Si no hay velocidad, el radar desliza tu posición con
 tu velocidad (la de `29 37`, o la medida entre tus registros) en la dirección de tu yaw, hasta que
 llega un registro de parada, para que se mueva de forma continua.
 

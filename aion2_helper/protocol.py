@@ -19,6 +19,14 @@ What is known comes from the open-source DPS meters that read the same stream
     29 37 <id varint> <2 bytes> <x> <y> <z> <vx> <vy> <vz> ...   a player moving, with its velocity
                                                      (cm/s); yours too, which makes the radar glide
     1f 37 <id varint> <flags> <x> <y> <z> ...        a player's position
+    1d 37 <id varint> <flags> [mode] [vx i8] [vy i8] [vz i8] <yaw u16> <yaw u16> [01]
+                                                     velocity every 100 ms, in 10 cm/s (flags bits 0-3
+                                                     say which fields follow; 01 ends it when bit 0 is
+                                                     clear). Integrated between two fixes of yours it
+                                                     lands within 35 cm on average (live, 2026-10-14).
+    20 37 <id varint> <flags> <5 bytes> <vx f32> <vy f32> <vz f32> ...   velocity in cm/s (flying)
+    2a 38 | 2b 38 <target> ... <caster varint> <u8> <u32> <u8> <x> <y> <z>   an effect, with its
+                                                     caster's position: yours when you cast it on you
     33 36 <id varint> ...                            your self record, at each map load
     34 36 <id varint> <kind u8> 00 <code u32> <x> <y> <z> ...   an object appeared: gathering
                                                      nodes (1500000 sat on an odyle node to 0.0 m),
@@ -240,6 +248,15 @@ class MapLoad:
 
 
 @dataclass
+class EntityVelocity:
+    entity_id: int
+    vx: float  # cm/s
+    vy: float
+    vz: float | None = None
+    yaw: float | None = None
+
+
+@dataclass
 class SelfIdentity:
     entity_id: int
 
@@ -249,7 +266,72 @@ class PlayerSpawn:
     entity_id: int
 
 
-Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn
+Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn | EntityVelocity
+
+VELOCITY_OPCODE = b"\x1d\x37"
+VELOCITY_UNIT = 10.0  # cm/s per unit of the 1d 37 bytes (fitted on a live walk: exactly 10)
+FLOAT_VELOCITY_OPCODE = b"\x20\x37"
+EFFECT_OPCODES = (b"\x2a\x38", b"\x2b\x38")
+
+
+def _i8(b: int) -> int:
+    return b - 256 if b > 127 else b
+
+
+def parse_velocity(packet: bytes, o: int) -> "EntityVelocity | None":
+    """``1d 37``: the compact velocity record, sent ten times a second per moving entity."""
+    eid, l1 = read_varint(packet, o + 2)
+    if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID):
+        return None
+    at = o + 2 + l1
+    if at >= len(packet):
+        return None
+    flags = packet[at]
+    i = at + 1
+    fields: dict[int, int] = {}
+    for bit in range(4):
+        if flags & (1 << bit):
+            if i >= len(packet):
+                return None
+            fields[bit] = packet[i]
+            i += 1
+    yaw = struct.unpack_from("<H", packet, i)[0] * 360.0 / 65536 if i + 2 <= len(packet) else None
+    vx = _i8(fields[1]) * VELOCITY_UNIT if 1 in fields else 0.0
+    vy = _i8(fields[2]) * VELOCITY_UNIT if 2 in fields else 0.0
+    vz = _i8(fields[3]) * VELOCITY_UNIT if 3 in fields else None
+    return EntityVelocity(eid, vx, vy, vz, yaw)
+
+
+def parse_float_velocity(packet: bytes, o: int) -> "EntityVelocity | None":
+    """``20 37``: a velocity in floats (cm/s), seen while flying."""
+    eid, l1 = read_varint(packet, o + 2)
+    at = o + 2 + l1 + 6
+    if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID) or at + 12 > len(packet):
+        return None
+    v = struct.unpack_from("<fff", packet, at)
+    if not all(math.isfinite(c) and abs(c) < 10000 for c in v):
+        return None
+    return EntityVelocity(eid, v[0], v[1], v[2])
+
+
+def parse_effect_caster_pos(packet: bytes, o: int) -> "EntityMove | None":
+    """``2a/2b 38``: an effect on <target>, ending with its caster and the caster's position.
+
+    Only kept when target and caster are the same entity (an effect you put on yourself, as a
+    mount or a flight buff does every second or so): then it is that entity's position."""
+    target, l1 = read_varint(packet, o + 2)
+    n = len(packet)
+    if l1 <= 0 or n < o + 2 + l1 + 24:
+        return None
+    pos = _read_pos(packet, n - 12)
+    if pos is None:
+        return None
+    end = n - 12 - 1 - 4 - 1  # <caster> <u8> <u32> <u8> <x> <y> <z>
+    for k in (1, 2, 3):
+        caster, ln = read_varint(packet, end - k)
+        if ln == k and caster == target:
+            return EntityMove(target, pos)
+    return None
 
 # Movement records not in the table are learned: an opcode whose short packets keep carrying
 # <id varint> <skip bytes> <plausible position> is taken as one, with that skip.
@@ -417,7 +499,7 @@ class ServerStreamParser:
         self._spawn_leads = {c[0] for c in opcodes.spawn}
         # opcode -> [packets seen, hits per skip 0..3]
         self._move_stats: dict[bytes, list[int]] = {}
-        self._not_moves = {b"\x2a\x37"} | (  # 2a 37: seen live, not a position
+        self._not_moves = {b"\x2a\x37", VELOCITY_OPCODE, FLOAT_VELOCITY_OPCODE} | (  # 2a 37: seen live, not a position
             set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load)
             | set(opcodes.self_identity) | set(opcodes.object_spawn) | set(opcodes.player_spawn)
         )  # fmt: skip
@@ -481,6 +563,21 @@ class ServerStreamParser:
                 if pos is not None and 1 <= eid <= MAX_ENTITY_ID:
                     events.append(EntityMove(eid, pos))
                     return
+        if op == VELOCITY_OPCODE:
+            v = parse_velocity(packet, o)
+            if v is not None:
+                events.append(v)
+            return
+        if op == FLOAT_VELOCITY_OPCODE:
+            v = parse_float_velocity(packet, o)
+            if v is not None:
+                events.append(v)
+                return
+        if op in EFFECT_OPCODES:
+            mv = parse_effect_caster_pos(packet, o)
+            if mv is not None:
+                events.append(mv)
+            return
         if op in self.op.moves:
             eid, l1 = read_varint(packet, o + 2)
             found = _move_pos_at(packet, o + 2 + l1, self.op.moves[op]) if l1 > 0 else None

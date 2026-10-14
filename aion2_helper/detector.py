@@ -13,7 +13,18 @@ from typing import Callable, TextIO
 
 from .config import Config
 from .diag import Diagnostics, log
-from .protocol import Despawn, EntityMove, Event, MapLoad, PlayerSpawn, SelfIdentity, Spawn, Vec3, ZoneChange
+from .protocol import (
+    Despawn,
+    EntityMove,
+    EntityVelocity,
+    Event,
+    MapLoad,
+    PlayerSpawn,
+    SelfIdentity,
+    Spawn,
+    Vec3,
+    ZoneChange,
+)
 from .selfpos import SelfPositionTracker, distance, distance_2d
 from .spots import SpotStore
 from .worldmap import (
@@ -143,6 +154,10 @@ class CubeDetector:
         self._moving = False
         self._speed: float | None = None  # units/s, measured between your records
         self._last_fix: tuple[float, Vec3] | None = None
+        # Dead reckoning: your last known point, carried along by every velocity record of yours
+        # (1d 37 ten times a second, 20 37 and 29 37 when flying) until the next fix.
+        self._dr: tuple[float, Vec3] | None = None
+        self._dr_vel: tuple[float, float, float, float] | None = None  # (time, vx, vy, vz)
         self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
 
     @property
@@ -261,6 +276,9 @@ class CubeDetector:
                 self._write({"type": "zone", "t": t, "pos": event.pos})
             elif isinstance(event, EntityMove):
                 self._move(event, t)
+            elif isinstance(event, EntityVelocity):
+                if event.entity_id == self.self_id:
+                    self._velocity_update(event, t)
             elif isinstance(event, MapLoad):
                 self._map_load(event.map_id, t)
                 if event.pos is not None:
@@ -297,12 +315,15 @@ class CubeDetector:
         self._self_t = t
         if source != "aproximada":
             self._trail.append((t, pos))
+            self._dr = (t, pos)
         if source == "teletransporte":
             self.tracker.add_anchor(pos)  # where the client must report you, too
 
     def velocity(self, now: float) -> tuple[float, float] | None:
         """Your speed (units/s): the one your own 29 37 record carries if fresh, else from the last
         two reports. Lets the radar glide between them."""
+        if self._dr_vel is not None and now - self._dr_vel[0] <= 0.5:
+            return self._dr_vel[1], self._dr_vel[2]
         if self._self_vel is not None and now - self._self_vel[0] <= 1.5:
             return self._self_vel[1], self._self_vel[2]
         if self._self_yaw is not None:
@@ -320,6 +341,33 @@ class CubeDetector:
         if (vx * vx + vy * vy) ** 0.5 > 3000:  # faster than any mount: a jump in the data
             return None
         return vx, vy
+
+    def _velocity_update(self, v: EntityVelocity, t: float) -> None:
+        self.diag.count("self_velocities")
+        self._advance(t)
+        self._dr_vel = (t, v.vx, v.vy, v.vz or 0.0)
+        self._self_vel = (t, v.vx, v.vy)
+        self._moving = bool(v.vx or v.vy)
+        if v.yaw is not None:
+            self._self_yaw = (t, v.yaw)
+        self._self_t = max(self._self_t, t)
+
+    def _advance(self, t: float) -> None:
+        """Moves the dead-reckoned point to time t at the current velocity."""
+        if self._dr is None or self._dr_vel is None:
+            return
+        t0, p = self._dr
+        dt = min(max(0.0, t - t0), 1.5)
+        if t - self._dr_vel[0] > 1.0:  # no velocity record for a second: you stopped
+            dt = min(dt, max(0.0, self._dr_vel[0] + 1.0 - t0))
+        _, vx, vy, vz = self._dr_vel
+        self._dr = (t, (p[0] + vx * dt, p[1] + vy * dt, p[2] + vz * dt))
+
+    def _dr_estimate(self, now: float) -> Vec3 | None:
+        if self._dr is None:
+            return None
+        self._advance(now)
+        return self._dr[1]
 
     def heading(self, now: float) -> float | None:
         """Where you face (from your last record's yaw), else the bearing of your last couple of
@@ -349,12 +397,14 @@ class CubeDetector:
         self._set_self(mv.pos, "servidor", t)
         if mv.velocity is not None:
             self._self_vel = (t, mv.velocity[0], mv.velocity[1])
+            self._dr_vel = (t, mv.velocity[0], mv.velocity[1], mv.velocity[2])
             self._moving = True
         if mv.yaw is not None:
             self._self_yaw = (t, mv.yaw)
         if mv.phase == "stop":
             self._moving = False
             self._self_vel = None
+            self._dr_vel = None
         elif mv.phase in ("start", "move"):
             self._moving = True
 
@@ -462,6 +512,8 @@ class CubeDetector:
             self._self_yaw = None
             self._moving = False
             self._last_fix = None
+            self._dr = None
+            self._dr_vel = None
             self._spawned_ids.clear()
             self._others.clear()
             if self.locator:
@@ -581,6 +633,11 @@ class CubeDetector:
                 del self._entities[e.entity_id]
             self._estimate_self(now)
             me = self.tracker.position
+            pos_time = self._self_t
+            if self.self_source == "servidor":
+                est = self._dr_estimate(now)
+                if est is not None:
+                    me, pos_time = est, now
             upm = self.config["units_per_meter"]
             ignore = set(self.config["ignore_codes"])
 
@@ -602,7 +659,7 @@ class CubeDetector:
             precise = self.self_source != "aproximada"
             snap = Snapshot(self.status, me, self.self_known, cubes, nearby, [], len(self._entities), self.world_status,
                             self.self_source, self.heading(now) if precise else None,
-                            self.velocity(now) if precise else None, self._self_t)  # fmt: skip
+                            self.velocity(now) if precise else None, pos_time)  # fmt: skip
             m = self.current_map
             if m is not None:
                 snap.map_id, snap.map_name, snap.cube_rule = m.map_id, m.name, m.cube_rule

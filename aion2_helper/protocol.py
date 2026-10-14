@@ -11,9 +11,14 @@ What is known comes from the open-source DPS meters that read the same stream
     41 36 <id varint> <mask u32> ...         NPC / object / summon spawn (40 36 before June 2026)
           ... <code u24 LE> 00 (00|40) 02 <x f32> <y f32> <z f32> ...
     42 36 <id varint> <0 varint> <flag>      death (flag 3) or gone from the world (flag 7)
-    23 36 00 <x f32> <y f32> <z f32> ...     the local player teleported (a zone load): where you are
-    23 36 <id varint> <x> <y> <z> ...        any other id: that entity's position update
-    21 36 <u32 count> <u32 map id> ...       map load, naming the map from the game's Map table
+    23 36 00 <5 bytes> <x f32> <y f32> <z f32> ...   the local player teleported (a zone load): where you are
+    21 36 <u32> <u32 map id> <8 bytes> <x> <y> <z>   map load (Map table id: 1010 = Verteron), and where you are
+    1a 37 <id varint> <2 bytes> <x> <y> <z> ...      an entity moved
+    1b 37 | 1c 37 <id varint> <1 byte> <x> <y> <z>   an entity moved (also seen: your own entity, all the time)
+    33 36 <id varint> ...                            your self record, at each map load: your entity id
+
+Layouts of 23 36, 21 36 and 1a-1c 37 were read off a live capture of 2026-10-14
+(Verteron), where the positions all agree to a few metres.
 
 The client's own packets are encrypted (A2Tools, ping_tracker.rs), so where you
 are can only come from the server: the teleport record, and updates of your own
@@ -218,9 +223,20 @@ class EntityMove:
 @dataclass
 class MapLoad:
     map_id: int
+    pos: Vec3 | None = None  # where the local player is
 
 
-Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad
+@dataclass
+class SelfIdentity:
+    entity_id: int
+
+
+Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity
+
+# Bytes between the entity id and the position in a 23 36 teleport / position record.
+TELEPORT_POS_SKIP = 5
+# Offset of the position after the 21 36 opcode.
+MAP_LOAD_POS_AT = 16
 
 # Opcodes whose packets are kept as samples for diagnostics (none carries names).
 SAMPLED_OPCODES = {b"\x23\x36", b"\x21\x36", b"\x42\x36", b"\x1d\x37", b"\x1c\x37", b"\x1b\x37", b"\x1a\x37", b"\x00\x8d", b"\x00\x36"}
@@ -272,6 +288,9 @@ class Opcodes:
     zone_change: list[bytes]
     signatures: list[bytes]
     map_load: list[bytes] = field(default_factory=lambda: [b"\x21\x36"])
+    # Movement records: opcode -> bytes between the entity id and the position.
+    moves: dict[bytes, int] = field(default_factory=lambda: {b"\x1a\x37": 2, b"\x1b\x37": 1, b"\x1c\x37": 1})
+    self_identity: list[bytes] = field(default_factory=lambda: [b"\x33\x36"])
 
     @staticmethod
     def _parse(codes: list[str]) -> list[bytes]:
@@ -285,6 +304,8 @@ class Opcodes:
             zone_change=cls._parse(cfg.get("zone_change", ["23 36"])),
             signatures=cls._parse(cfg.get("signatures", ["0E 00 36", "06 00 36"])),
             map_load=cls._parse(cfg.get("map_load", ["21 36"])),
+            moves={bytes.fromhex(k): int(v) for k, v in cfg.get("moves", {"1A 37": 2, "1B 37": 1, "1C 37": 1}).items()},
+            self_identity=cls._parse(cfg.get("self_identity", ["33 36"])),
         )
 
 
@@ -312,10 +333,16 @@ class ServerStreamParser:
                 self._packet(buffer[f.start : f.end], events)
         return events, consumed
 
-    def _bundle(self, payload: bytes, events: list[Event], depth: int = 0) -> None:
+    def _bundle(self, payload: bytes, events: list[Event], depth: int = 0, embedded: bool = False) -> None:
+        if depth > 4:
+            return
         data = decompress_bundle(payload)
         if self.diag is not None:
-            self.diag.count("bundles" if data is not None else "bundle_fail")
+            if embedded:
+                if data is not None:
+                    self.diag.count("embedded_bundles")
+            else:
+                self.diag.count("bundles" if data is not None else "bundle_fail")
         if data is None or depth > 4:
             return
         frames, _ = walk(data, inner=True)
@@ -323,9 +350,9 @@ class ServerStreamParser:
             if f.bundle:
                 self._bundle(data[f.start + f.payload_start : f.end], events, depth + 1)
             else:
-                self._packet(data[f.start : f.end], events)
+                self._packet(data[f.start : f.end], events, depth + 1)
 
-    def _packet(self, packet: bytes, events: list[Event]) -> None:
+    def _packet(self, packet: bytes, events: list[Event], depth: int = 0) -> None:
         _, o = read_varint(packet, 0)
         if o <= 0 or o + 2 > len(packet):
             return
@@ -337,16 +364,27 @@ class ServerStreamParser:
                 self.diag.sample(op, packet)
         if op in self.op.zone_change:
             eid, l1 = read_varint(packet, o + 2)
-            pos = _read_pos(packet, o + 2 + l1) if l1 > 0 else None
-            if eid == 0 and l1 > 0:
-                events.append(ZoneChange(pos))
-                return
-            if l1 > 0 and pos is not None and 1 <= eid <= MAX_ENTITY_ID:
+            if l1 > 0:
+                pos = _read_pos(packet, o + 2 + l1 + TELEPORT_POS_SKIP) or _read_pos(packet, o + 2 + l1)
+                if eid == 0:
+                    events.append(ZoneChange(pos))
+                    return
+                if pos is not None and 1 <= eid <= MAX_ENTITY_ID:
+                    events.append(EntityMove(eid, pos))
+                    return
+        if op in self.op.moves:
+            eid, l1 = read_varint(packet, o + 2)
+            pos = _read_pos(packet, o + 2 + l1 + self.op.moves[op]) if l1 > 0 else None
+            if pos is not None and 1 <= eid <= MAX_ENTITY_ID:
                 events.append(EntityMove(eid, pos))
-                return
-        if op in self.op.map_load and o + 10 <= len(packet):
-            events.append(MapLoad(struct.unpack_from("<I", packet, o + 6)[0]))
             return
+        if op in self.op.map_load and o + 10 <= len(packet):
+            events.append(MapLoad(struct.unpack_from("<I", packet, o + 6)[0], _read_pos(packet, o + 2 + MAP_LOAD_POS_AT)))
+            return
+        if op in self.op.self_identity:
+            eid, l1 = read_varint(packet, o + 2)
+            if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:
+                events.append(SelfIdentity(eid))
         if op in self.op.despawn:
             eid, l1 = read_varint(packet, o + 2)
             _, l2 = read_varint(packet, o + 2 + max(l1, 0)) if l1 > 0 else (-1, -1)
@@ -357,6 +395,37 @@ class ServerStreamParser:
                 events.append(Despawn(eid, flag))
                 return
         self._scan_spawns(packet, events)
+        if depth < 3:
+            self._embedded_bundles(packet, events, depth)
+
+    def _embedded_bundles(self, packet: bytes, events: list[Event], depth: int) -> None:
+        """LZ4 bundles carried inside a larger packet, where the framing never opens them.
+
+        A2Tools found the self record in them; spawns ride there too (a live capture
+        had 26 removals for 2 spawns read). ``<varint len> FF FF <size u32> <lz4>``."""
+        i = 2
+        n = len(packet)
+        while i + 8 < n:
+            if packet[i] != 0xFF or packet[i + 1] != 0xFF:
+                i += 1
+                continue
+            end = None
+            for k in (1, 2, 3):
+                at = i - k
+                if at < 1:
+                    continue
+                value, vlen = read_varint(packet, at)
+                if vlen != k or value <= 0:
+                    continue
+                total = _frame_size(value, vlen)
+                if total is not None and total > vlen + 6 and at + total <= n:
+                    end = at + total
+                    break
+            if end is None:
+                i += 1
+                continue
+            self._bundle(packet[i:end], events, depth + 1, embedded=True)
+            i = end
 
     def _scan_spawns(self, data: bytes, events: list[Event]) -> None:
         """Spawn records sit at the front of a packet or embedded in a larger one."""

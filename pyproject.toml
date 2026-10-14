@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aion2-helper"
-version = "0.4.0"
+version = "0.4.1"
 description = "Overlay personal que detecta los Hidden Cubes de AION 2 cerca del personaje (captura pasiva de red)."
 requires-python = ">=3.10"
 dependencies = ["lz4>=4", "scapy>=2.5", "pynput>=1.7", "psutil>=5"]

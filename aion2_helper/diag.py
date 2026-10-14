@@ -80,6 +80,7 @@ class Diagnostics:
             f"TCP: {c['tcp_gaps']} huecos ({c['tcp_gap_bytes']} bytes perdidos), {c['tcp_dup_bytes']} bytes repetidos, "
             f"{c['queue_full']} paquetes descartados por cola llena",
             f"Tramas: {c['frames']} paquetes, {c['bundles']} bloques LZ4 ({c['bundle_fail']} fallidos), "
+            f"{c['embedded_bundles']} bloques dentro de paquetes, "
             f"{c['resync']} bytes de resincronización",
             "Opcodes más frecuentes: " + (", ".join(f"{op}×{n}" for op, n in ops) or "ninguno"),
             f"Spawns: {c['spawns']} ({c['spawns_with_pos']} con posición), {c['despawns']} bajas "

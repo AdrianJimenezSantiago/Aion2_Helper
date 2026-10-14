@@ -13,7 +13,7 @@ from typing import Callable, TextIO
 
 from .config import Config
 from .diag import Diagnostics, log
-from .protocol import Despawn, EntityMove, Event, MapLoad, Spawn, Vec3, ZoneChange
+from .protocol import Despawn, EntityMove, Event, MapLoad, SelfIdentity, Spawn, Vec3, ZoneChange
 from .selfpos import SelfPositionTracker, distance, distance_2d
 from .spots import SpotStore
 from .worldmap import (
@@ -30,7 +30,7 @@ from .worldmap import (
 
 MAX_ENTITIES = 5000
 # Your own entity: a position update this close (units) to where you just teleported ...
-SELF_MATCH_UNITS = 500.0
+SELF_MATCH_UNITS = 1500.0
 # ... within this many seconds of the teleport, twice.
 SELF_MATCH_S = 20.0
 # A teleport position stays good this long; after it, without updates of your
@@ -244,6 +244,13 @@ class CubeDetector:
                 self._move(event, t)
             elif isinstance(event, MapLoad):
                 self._map_load(event.map_id, t)
+                if event.pos is not None:
+                    self._teleport = (event.pos, t)
+                    self._set_self(event.pos, "teletransporte", t)
+            elif isinstance(event, SelfIdentity):
+                if event.entity_id != self.self_id:
+                    log.info("Tu entidad (registro propio): id %s", event.entity_id)
+                self.self_id = event.entity_id
 
     # ───── where you are ─────
 
@@ -299,6 +306,7 @@ class CubeDetector:
         known = self.config["map_ids"].get(str(number))
         if known in self.world.maps:
             self.locator.map_id = known
+            self.locator.transform = self.locator.transform or "yx"
             m = self.locator.map
             self.world_status = f"Mapa: {m.name} ({len(m.cubes)} spots)"
         else:

@@ -42,9 +42,14 @@ Usa la misma técnica que los DPS meters open source del juego
 - `41 36 <id> <mask> … <código NPC u24> 00 (00|40) 02 <x f32> <y f32> <z f32>`: spawn de NPC/objeto
   con su posición en el mundo, en unidades de Unreal (cm).
 - `42 36 <id> 00 <flag>`: muerte (flag 3) o desaparición (flag 7). Con eso el cubo se quita del radar.
-- `23 36 00 <x> <y> <z>`: teletransporte del jugador local (al entrar en una zona). Da tu posición
-  exacta. Con otro id, `23 36 <id> <x> <y> <z>` es la actualización de posición de esa entidad.
-- `21 36 <u32> <u32 id de mapa>`: carga de mapa. La herramienta aprende qué id corresponde a cada mapa.
+- `23 36 00 <5 bytes> <x> <y> <z>`: teletransporte del jugador local (al entrar en una zona): tu
+  posición exacta.
+- `21 36 <u32> <u32 id de mapa> <8 bytes> <x> <y> <z>`: carga de mapa (1010 = Verteron) y tu posición.
+  La herramienta aprende qué id corresponde a cada mapa.
+- `1a 37 <id> <2 bytes> <x> <y> <z>` y `1b 37` / `1c 37 <id> <1 byte> <x> <y> <z>`: una entidad se
+  mueve. Tu propia entidad aparece en ellos constantemente; su id llega en tu registro propio
+  (`33 36 <id>`) o se reconoce porque se mueve justo donde te teletransportaste.
+- Bloques LZ4 dentro de otros paquetes: también se abren (llevan spawns).
 
 Los paquetes que envía tu cliente van **cifrados**, así que tu **posición propia** sale del servidor:
 exacta al entrar en una zona y, después, siguiendo a tu propia entidad, que se reconoce porque sus

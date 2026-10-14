@@ -238,7 +238,7 @@ def test_map_id_is_learned_and_reused(tmp_path):
     det.handle(MapLoad(110010000))
     for i, a in enumerate(ANCHORS):
         det.handle(Spawn(i + 1, 0x0C, 2_100_000, a))
-    assert det.current_map.map_id == "World_L_A" and det.config["map_ids"] == {"110010000": "World_L_A"}
+    assert det.current_map.map_id == "World_L_A" and det.config["map_ids"]["110010000"] == "World_L_A"
     det.handle(MapLoad(220020000))
     assert det.current_map is None
     det.handle(MapLoad(110010000))
@@ -278,3 +278,63 @@ def test_diagnostic_samples_known_opcodes():
     parser.consume(frame(b"\x1d\x37\x01\x02\x03\x04"))
     report = "\n".join(det.diag.report(det))
     assert "[1d 37]" in report and "1d 37 01 02 03 04" in report
+
+
+# Real packets from a live diagnostic (Verteron, 2026-10-14), as the overlay sampled them.
+LIVE_TELEPORT = "1e 23 36 00 00 00 00 00 00 be 1c 93 c6 64 30 0f 48 00 dd 09 47 01 00 00 00 97 52"
+LIVE_MAP_LOAD = ("34 21 36 11 00 00 00 f2 03 00 00 5b 25 89 00 00 00 00 00 be 1c 93 c6 64 30 0f 48 00 dd 09 47"
+                 " f9 cd 0b c3 02 00 00 00 00 00 00 00 00 00 00 00 00 00")
+LIVE_MOVES = [
+    "19 1a 37 c0 99 02 00 00 36 03 95 c6 42 b5 0f 48 00 d8 09 47 21 dc",
+    "1b 1b 37 c0 99 02 04 18 be 95 c6 8e d1 0f 48 00 ce 09 47 1d dc 1d dc 01",
+    "1b 1c 37 eb c4 02 04 3e d3 80 c7 d0 a1 e6 47 00 58 8e 46 5a ed 5a ed 01",
+]
+
+
+def _live(h: str) -> bytes:
+    """The sample is the packet as framed (its length byte first); the stream needs the same bytes."""
+    data = bytes.fromhex(h)
+    from aion2_helper.protocol import read_varint
+
+    value, vlen = read_varint(data, 0)
+    return data + b"\x00" * max(0, value - 4 + vlen - len(data))  # samples are cut at 56 bytes
+
+
+def test_live_teleport_map_load_and_moves_decode():
+    import pytest
+
+    from aion2_helper.protocol import EntityMove, MapLoad, ZoneChange
+
+    stream = _live(LIVE_TELEPORT) + _live(LIVE_MAP_LOAD) + b"".join(_live(h) for h in LIVE_MOVES)
+    events, consumed = ServerStreamParser().consume(stream)
+    assert consumed == len(stream)
+    tp, ml, m1, m2, m3 = events
+    assert isinstance(tp, ZoneChange) and tp.pos == pytest.approx((-18830.4, 146625.6, 35293.0), abs=0.1)
+    assert isinstance(ml, MapLoad) and ml.map_id == 1010 and ml.pos == tp.pos
+    assert [type(e) for e in (m1, m2, m3)] == [EntityMove] * 3
+    assert m1.entity_id == m2.entity_id == 36032 and m3.entity_id == 41579
+    assert m1.pos == pytest.approx((-19073.6, 147157.0, 35288.0), abs=0.1)
+    assert m3.pos == pytest.approx((-65958.5, 118083.6, 18220.0), abs=0.1)
+
+
+def test_live_session_finds_you_and_verteron():
+    det = CubeDetector(Config(None))
+    parser = ServerStreamParser(DEFAULT_OPCODES, det.diag)
+    events, _ = parser.consume(_live(LIVE_TELEPORT) + _live(LIVE_MAP_LOAD) + _live(LIVE_MOVES[0]) + _live(LIVE_MOVES[1]))
+    for e in events:
+        det.handle(e)
+    assert det.map_number == 1010
+    assert det.self_id == 36032 and det.self_source == "servidor"  # your entity: it moves where you landed
+
+
+def test_spawns_in_a_bundle_inside_another_packet_are_read():
+    inner = frame(spawn_body(901, 2_100_603, (74919.0, 95713.0, 11077.0)))
+    bundle = b"\xff\xff" + struct.pack("<I", len(inner)) + lz4.block.compress(inner, store_size=False)
+    from aion2_helper.protocol import encode_varint
+
+    carrier = b"\x00\x8d\x01\x02\x03" + encode_varint(len(bundle) + 4) + bundle + b"\x05\x06"
+    det = CubeDetector(Config(None))
+    events, _ = ServerStreamParser(DEFAULT_OPCODES, det.diag).consume(frame(carrier))
+    # (LZ4 keeps short data as literals, so the raw scan may see it too: same entity, no harm)
+    assert {e.entity_id for e in events if isinstance(e, Spawn)} == {901}
+    assert det.diag.counts["embedded_bundles"] == 1

@@ -217,9 +217,10 @@ Para ver el detalle:
   spawns de los puntos de cada mapa, y el estado del aprendizaje de la posición propia.
 - **Copiar diagnóstico** (clic derecho): copia ese texto al portapapeles para compartirlo. No contiene
   nombres de personajes ni chat.
-- **Traza de tu entidad**: `logs\selftrace-*.txt` guarda cada paquete del servidor que menciona tu
-  entidad (sin los que llevan nombres), para decodificar más registros. Compártela si el radar no te
-  sigue bien.
+- **Traza de tu entidad**: `logs\selftrace-*.txt` se crea al arrancar. Mientras tu entidad no se ha
+  reconocido guarda todos los registros de movimiento (`xx 37`), los teletransportes y las cargas de
+  mapa; después, solo los paquetes que te mencionan. Nunca guarda los registros con nombres. Compártela
+  si el radar no te sigue bien.
 - **Log**: `%APPDATA%\Aion2Helper\logs\aion2helper.log`, con el mismo informe cada 30 s, la conexión
   elegida, el mapa reconocido y los errores (clic derecho > *Abrir carpeta de logs*).
 - **Grabar y analizar**: `python -m aion2_helper --record juego.pcap` mientras juegas un par de minutos

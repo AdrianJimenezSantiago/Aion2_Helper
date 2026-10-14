@@ -254,6 +254,7 @@ class CubeDetector:
                 self.tracker.clear_anchors()
                 self._recent.clear()
                 if event.pos is not None:
+                    self.diag.note(f"teletransporte a ({event.pos[0]:.0f}, {event.pos[1]:.0f}, {event.pos[2]:.0f})")
                     self._teleport = (event.pos, t)
                     self._self_candidates.clear()  # a new zone: your entity is the one moving from here
                     self._set_self(event.pos, "teletransporte", t)
@@ -391,6 +392,7 @@ class CubeDetector:
             # Your own movement record: decisive, and it corrects an earlier wrong pick.
             if self.self_id != mv.entity_id:
                 log.info("Tu entidad (flags 05): id %s", mv.entity_id)
+                self.diag.note(f"tu entidad: {mv.entity_id} (flags 05)")
             self.self_id = mv.entity_id
             self._self_candidates.clear()
             self._self_update(mv, t)
@@ -410,6 +412,7 @@ class CubeDetector:
         if not settled and n == ranked[0] and n >= 10 and n >= 2 * second:
             self.self_id = mv.entity_id
             log.info("Tu entidad: id %s", mv.entity_id)
+            self.diag.note(f"tu entidad: {mv.entity_id} (puntuación)")
             self._self_update(mv, t)
 
     def _map_load(self, number: int, t: float) -> None:

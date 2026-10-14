@@ -67,15 +67,40 @@ class Diagnostics:
             d = self.client_samples.setdefault(key, deque(maxlen=2))
             d.append(f"[{len(packet)}] " + bytes(packet[:44]).hex(" "))
 
+    def start_trace(self, path: Path) -> None:
+        """Creates the trace file now, so it exists even before anything is traced."""
+        self.trace_path = path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(
+                    "# Aion2 Helper: packets about your entity (or, while it is unknown, every movement\n"
+                    "# record xx 37 and the teleport / map-load records). Records with names are never written.\n"
+                    "# time  opcode  [length]  hex (first 72 bytes)\n"
+                )
+        except OSError:
+            self.trace_path = None
+
+    def note(self, text: str) -> None:
+        """An event line in the trace (your entity found, a teleport...)."""
+        self._trace_write(f"# {time.time():.3f} {text}")
+
     def self_packet(self, op: bytes, packet: bytes) -> None:
         with self._lock:
             self.self_opcodes[op.hex(" ")] += 1
-            if self.trace_path is None or self._trace_lines > 20000:
+        self.trace_packet(op, packet)
+
+    def trace_packet(self, op: bytes, packet: bytes) -> None:
+        self._trace_write(f"{time.time():.3f} {op.hex(' ')} [{len(packet)}] {bytes(packet[:72]).hex(' ')}")
+
+    def _trace_write(self, line: str) -> None:
+        with self._lock:
+            if self.trace_path is None or self._trace_lines > 30000:
                 return
             self._trace_lines += 1
             try:
                 with open(self.trace_path, "a", encoding="utf-8") as f:
-                    f.write(f"{time.time():.3f} {op.hex(' ')} [{len(packet)}] {bytes(packet[:72]).hex(' ')}\n")
+                    f.write(line + "\n")
             except OSError:
                 self.trace_path = None
 

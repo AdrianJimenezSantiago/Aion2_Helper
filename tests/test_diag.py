@@ -620,3 +620,20 @@ def test_impossible_jumps_of_yours_are_ignored():
     det.handle(EntityMove(650, (34925.0, 33763.0, 30041.0), learned=True))  # 3 m: fine
     assert det.tracker.position == (34925.0, 33763.0, 30041.0)
     assert det.diag.counts["moves_rejected"] == 1
+
+
+def test_trace_exists_from_the_start_and_keeps_movement_while_you_are_unknown(tmp_path):
+    from aion2_helper.protocol import encode_varint
+
+    det = CubeDetector(Config(None))
+    det.diag.start_trace(tmp_path / "logs" / "selftrace.txt")
+    assert (tmp_path / "logs" / "selftrace.txt").read_text().startswith("# Aion2 Helper")
+    parser = ServerStreamParser(DEFAULT_OPCODES, det.diag)  # watch_id None: you are not known yet
+    parser.consume(frame(b"\x1d\x37" + encode_varint(949) + b"\x2e\x08\x05\x01\x95\x18\x95\x18\x01")
+                   + frame(b"\x00\x8d\x01\x02\x03")  # not movement: left out
+                   + frame(b"\x45\x36" + encode_varint(949) + b"\x05Name!")  # names: never
+                   + _live(LIVE_TELEPORT))
+    det.diag.note("tu entidad: 949 (flags 05)")
+    body = (tmp_path / "logs" / "selftrace.txt").read_text().splitlines()[3:]  # after the 3-line header
+    assert [l.split()[1:3] for l in body[:2]] == [["1d", "37"], ["23", "36"]]
+    assert body[2].endswith("tu entidad: 949 (flags 05)") and len(body) == 3

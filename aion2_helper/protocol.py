@@ -464,10 +464,13 @@ class ServerStreamParser:
             self.diag.opcode(op)
             if op in SAMPLED_OPCODES:
                 self.diag.sample(op, packet)
-            if self.watch_id is not None and op not in NAMED_OPCODES:
-                eid, l1 = read_varint(packet, o + 2)
-                if l1 > 0 and eid == self.watch_id:
-                    self.diag.self_packet(op, packet)
+            if op not in NAMED_OPCODES:
+                if self.watch_id is not None:
+                    eid, l1 = read_varint(packet, o + 2)
+                    if l1 > 0 and eid == self.watch_id:
+                        self.diag.self_packet(op, packet)
+                elif op[1] == 0x37 or op in self.op.zone_change or op in self.op.map_load:
+                    self.diag.trace_packet(op, packet)  # you are among these: kept to find out which
         if op in self.op.zone_change:
             eid, l1 = read_varint(packet, o + 2)
             if l1 > 0:

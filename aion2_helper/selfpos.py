@@ -125,6 +125,11 @@ class SelfPositionTracker:
         self.updated_at = c.last_t
         self._candidates.clear()
 
+    def best_candidates(self, n: int = 3) -> list[tuple[tuple[bytes, int], _Candidate]]:
+        """The most promising (opcode, offset) keys so far, for diagnostics."""
+        ranked = sorted(self._candidates.items(), key=lambda kv: -(kv[1].good + kv[1].near_anchor))
+        return ranked[:n]
+
     def key_for_config(self) -> dict | None:
         if self.fixed_key is None:
             return None

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .detector import CubeDetector
+from .diag import log
 from .protocol import Opcodes, ServerStreamParser
 
 MAX_BUFFER_BYTES = 2 * 1024 * 1024
@@ -107,7 +108,7 @@ class Dispatcher:
         self.detector = detector
         self.opcodes = opcodes
         self.recorder = recorder
-        self.parser = ServerStreamParser(opcodes)
+        self.parser = ServerStreamParser(opcodes, detector.diag)
         self._candidates: dict[tuple, tuple[int, float]] = {}
         self._server: tuple[str, int] | None = None
         self._down: TcpStream | None = None
@@ -127,11 +128,13 @@ class Dispatcher:
             return
         host, port = self._server
         if (seg.src, seg.sport) == (host, port):
+            self.detector.diag.count("seg_down")
             self._last_seen = seg.t
             if self.recorder:
                 self.recorder.write(seg)
             self._down.add(seg.seq, seg.data, seg.t)
         elif (seg.dst, seg.dport) == (host, port):
+            self.detector.diag.count("seg_up")
             self._last_seen = seg.t
             if self.recorder:
                 self.recorder.write(seg)
@@ -158,6 +161,8 @@ class Dispatcher:
         self._down = TcpStream(self._consume_down)
         self._up = TcpStream(self._consume_up)
         self.detector.status = f"Conectado al juego ({seg.src}:{seg.sport})"
+        self.detector.diag.count("conn_locks")
+        log.info("Conexión del juego fijada: %s:%s -> %s:%s", seg.src, seg.sport, seg.dst, seg.dport)
         self.detector.new_connection(seg.t)
         self._down.add(seg.seq, seg.data, seg.t)
 
@@ -361,6 +366,7 @@ class LiveCapture:
                     self.dispatcher.process(seg)
                 except Exception as exc:  # one bad packet must not kill the capture
                     self.dispatcher.detector.status = f"Error de análisis: {exc!r}"
+                    log.exception("error analizando un paquete")
 
     def stop(self) -> None:
         self._stop.set()

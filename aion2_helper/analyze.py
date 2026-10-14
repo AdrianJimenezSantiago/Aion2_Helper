@@ -3,7 +3,7 @@
 With the community spots downloaded (``update-spots``) no marks are needed:
 codes whose entities sit exactly on known cube spots are the cube.
 
-Without them, run the overlay with ``--log`` and press the mark hotkey (F8)
+Without them, run the overlay with ``--log`` and press the mark hotkey (Ctrl+Shift+F8)
 every time you stand next to a cube (you hear its chime or see it). Codes that
 keep showing up right next to you at those marks, and rarely anywhere else,
 are the cube.
@@ -99,10 +99,10 @@ def main(path: Path, top: int = 10, world: WorldData | None = None) -> None:
             print("\nUn código con 2 o más spots y precisión alta es un Hidden Cube.\n")
     if not marks:
         if world is None:
-            print("No hay marcas ni spots de la comunidad. Ejecuta 'update-spots', o pulsa F8 junto a")
+            print("No hay marcas ni spots de la comunidad. Ejecuta 'update-spots', o pulsa Ctrl+Mayús+F8 junto a")
             print("cada cubo mientras grabas con --log.")
         return
     print(f"{'código':>10} {'puntuación':>10} {'marcas':>7} {'spawns':>7}")
     for code, score, h, n in rank(records)[:top]:
         print(f"{code:>10} {score:>10.2f} {h:>7} {n:>7}")
-    print("\nAñade el mejor código a \"cube_codes\" en config.json (o pulsa F9 junto al cubo).")
+    print("\nAñade el mejor código a \"cube_codes\" en config.json (o pulsa Ctrl+Mayús+F9 junto al cubo).")

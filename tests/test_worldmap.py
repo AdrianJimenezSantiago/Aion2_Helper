@@ -232,11 +232,28 @@ def test_cube_at_spot_shows_as_cube_not_empty(tmp_path):
     assert statuses == {"cube"}
 
 
-def test_zone_change_forgets_map(tmp_path):
+def test_zone_change_keeps_map_but_new_connection_forgets_it(tmp_path):
     det, _, _ = detector(tmp_path)
     locate(det)
-    det.handle(ZoneChange())
+    det.handle(ZoneChange())  # may be just a sub-area: the map vote carries on
+    assert det.current_map.map_id == "World_L_A"
+    det.new_connection()
     assert det.current_map is None and det.locator.transform == "xy"
+
+
+def test_locator_moves_to_another_map_when_it_clearly_wins():
+    w = world()
+    loc = WorldLocator(w, "xy")
+    for a in ANCHORS:
+        loc.observe(a)
+    assert loc.map_id == "World_L_A"
+    other = [p for p in w.maps["World_D_B"].anchors.points]
+    changed = False
+    for _ in range(3):
+        for a in other:
+            changed |= loc.observe(a)
+    assert changed and loc.map_id == "World_D_B"
+    assert loc.top_scores(1)[0][0] == ("World_D_B", "xy")
 
 
 def test_analyze_ranks_codes_by_spots():

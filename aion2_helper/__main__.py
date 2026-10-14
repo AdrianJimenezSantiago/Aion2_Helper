@@ -1,4 +1,4 @@
-"""Command line: ``python -m aion2_helper [run|replay|analyze|update-spots|import-spots|ifaces]``."""
+"""Command line: ``python -m aion2_helper [run|replay|diagnose|analyze|update-spots|import-spots|ifaces]``."""
 
 from __future__ import annotations
 
@@ -48,10 +48,17 @@ def _load_world(cfg: Config, detector, update: bool = True) -> None:
             community.save(fresh, path)
             detector.set_world(WorldData.from_dataset(fresh))
         except Exception as exc:
+            from .diag import log
+
+            log.warning("no se pudieron descargar los spots: %r", exc)
             if not data:
                 detector.world_status = f"Sin spots de la comunidad ({exc.__class__.__name__}); prueba 'update-spots'"
 
     threading.Thread(target=fetch, daemon=True).start()
+
+
+def _logs_dir(cfg: Config) -> Path:
+    return (cfg.path.parent if cfg.path else Path.cwd()) / "logs"
 
 
 def _log_path(args, cfg: Config) -> Path | None:
@@ -59,7 +66,7 @@ def _log_path(args, cfg: Config) -> Path | None:
         return None
     if args.log != "auto":
         return Path(args.log)
-    base = (cfg.path.parent if cfg.path else Path.cwd()) / "logs"
+    base = _logs_dir(cfg)
     base.mkdir(parents=True, exist_ok=True)
     return base / f"discovery-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
 
@@ -72,6 +79,14 @@ def cmd_run(args) -> int:
     overlay_ref: list = []
     detector = _detector(cfg, _log_path(args, cfg), overlay_ref)
     stop = threading.Event()
+    log_file = None
+    if not args.demo:
+        from .diag import log, setup_logging, start_periodic_report
+
+        log_file = setup_logging(_logs_dir(cfg))
+        log.info("Aion2 Helper %s · config %s · interfaz %s", __version__, cfg.path, args.iface or "por defecto")
+        start_periodic_report(detector.diag, detector, stop)
+        print(f"Log de diagnóstico: {log_file}")
     recorder = PcapWriter(Path(args.record)) if args.record else None
     capture = None
 
@@ -100,6 +115,7 @@ def cmd_run(args) -> int:
             try:
                 capture.start()
             except Exception as exc:
+                log.exception("no se pudo iniciar la captura")
                 print(f"No se pudo iniciar la captura: {exc}\n¿Está instalado Npcap (modo WinPcap) y ejecutas como administrador?")
                 return 1
 
@@ -132,12 +148,34 @@ def cmd_run(args) -> int:
 
     overlay = Overlay(detector, on_close=shutdown)
     overlay.discovery = args.discovery
+    overlay.log_dir = log_file.parent if log_file else None
     overlay_ref.append(overlay)
     detector.on_learned = overlay.learned
     hk = start_hotkeys(overlay, cfg["hotkeys"])
     if hk is None:
         print("Atajos globales desactivados (instala 'pynput'). Clic derecho en el overlay para cerrar.")
     overlay.run()
+    return 0
+
+
+def cmd_diagnose(args) -> int:
+    """Replays a recording at full speed and prints what each stage saw."""
+    from . import community
+    from .capture import Dispatcher, replay
+    from .config import Config as Cfg
+    from .detector import CubeDetector
+    from .protocol import Opcodes
+    from .worldmap import WorldData
+
+    saved = Config.load(Path(args.config) if args.config else None)
+    cfg = Cfg(None, {"opcodes": saved["opcodes"], "self_position": saved["self_position"], "cube_codes": saved["cube_codes"]})
+    detector = CubeDetector(cfg)
+    data = community.load(community.dataset_path(saved.path))
+    if data:
+        detector.set_world(WorldData.from_dataset(data))
+    n = replay(Path(args.pcap), Dispatcher(detector, Opcodes.from_config(cfg["opcodes"])))
+    print(f"{args.pcap}: {n} segmentos TCP")
+    print("\n".join(detector.diag.report(detector)))
     return 0
 
 
@@ -214,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
     an = sub.add_parser("analyze", help="busca el código del cubo en un registro de descubrimiento")
     an.add_argument("log")
     an.add_argument("--top", type=int, default=10)
+    dg = sub.add_parser("diagnose", help="reproduce una grabación (--record) e informa de cada etapa")
+    dg.add_argument("pcap")
     up = sub.add_parser("update-spots", help="descarga los spots de Hidden Cube de aion2.th.gl")
     up.add_argument("--from", dest="source", help="carpeta con ficheros World_*.raw descargados a mano")
     im = sub.add_parser("import-spots", help="importa spots (CSV x,y,z o JSON) en coordenadas del mundo")
@@ -227,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     commands = {
         "analyze": cmd_analyze,
+        "diagnose": cmd_diagnose,
         "update-spots": cmd_update_spots,
         "import-spots": cmd_import,
         "ifaces": cmd_ifaces,

@@ -9,6 +9,9 @@ mouse from the game. Works over the game in borderless/windowed fullscreen
 
 Mouse: drag to move, wheel over the radar to zoom, right click for the menu,
 double click on the header for the compact (radar only) mode.
+
+The diagnostics panel (menu, or Ctrl+Shift+F5) shows what each capture stage
+sees; "Copiar diagnóstico" puts the same text on the clipboard to share it.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from . import theme as T
@@ -91,6 +95,10 @@ class Overlay:
         self.config = detector.config
         self.on_close = on_close
         self.discovery = False
+        self.diagnostics = False
+        self.log_dir: Path | None = None
+        self._diag_lines: list[str] = []
+        self._diag_t = -10.0
         self._actions: "queue.Queue[tuple]" = queue.Queue()
         self._alert_until = 0.0
         self._alert_color = T.KEY
@@ -206,6 +214,16 @@ class Overlay:
         elif action == "toggle_overlay":
             self._visible = not self._visible
             (self.root.deiconify if self._visible else self.root.withdraw)()
+        elif action == "diagnostics":
+            self.diagnostics = not self.diagnostics
+            self._diag_t = -10.0
+        elif action == "copy_diagnostics":
+            text = "\n".join(self.detector.diag.report(self.detector))
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.toast("Diagnóstico copiado al portapapeles", T.OK)
+        elif action == "open_logs":
+            self._open_logs()
         elif action == "discovery":
             self.discovery = not self.discovery
             self.toast("Modo descubrimiento " + ("activado" if self.discovery else "desactivado"))
@@ -263,6 +281,8 @@ class Overlay:
             y = self._draw_cubes(snap, now, y)
             if self.discovery:
                 y = self._draw_discovery(snap, y)
+            if self.diagnostics:
+                y = self._draw_diagnostics(now, y)
             y = self._draw_footer(snap, y)
         else:
             y += 4
@@ -578,7 +598,7 @@ class Overlay:
 
     def _empty_state(self, snap: Snapshot) -> tuple[str, str]:
         if self.detector.world is None and not self.config["cube_codes"]:
-            return "Sin calibrar", "ejecuta 'update-spots' o pulsa F9 junto a un cubo"
+            return "Sin calibrar", "ejecuta 'update-spots' o Ctrl+Mayús+F9 junto a un cubo"
         if not self.config["cube_codes"]:
             return "Aprendiendo el código del cubo…", "se aprende solo al ver el primero"
         if snap.next_spot is not None:
@@ -587,7 +607,7 @@ class Overlay:
 
     def _draw_discovery(self, snap: Snapshot, y: float) -> float:
         c, f = self.canvas, self.fonts
-        c.create_text(M + 2, y + 14, text="ENTIDADES CERCANAS · F9 = ES UN CUBO", fill=T.MUTED, font=f["tiny"], anchor="w")
+        c.create_text(M + 2, y + 14, text="ENTIDADES CERCANAS · CTRL+MAYÚS+F9 = ES UN CUBO", fill=T.MUTED, font=f["tiny"], anchor="w")
         y += 22
         if not snap.nearby:
             c.create_text(M + 2, y + 6, text="(ninguna entidad sin clasificar cerca)", fill=T.FAINT, font=f["tiny"], anchor="w")
@@ -599,17 +619,32 @@ class Overlay:
             y += 14
         return y
 
+    def _draw_diagnostics(self, now: float, y: float) -> float:
+        c, f = self.canvas, self.fonts
+        if now - self._diag_t >= 1.0:
+            self._diag_lines = self.detector.diag.report(self.detector)
+            self._diag_t = now
+        c.create_text(M + 2, y + 14, text="DIAGNÓSTICO · MENÚ > COPIAR PARA COMPARTIR", fill=T.ACCENT, font=f["tiny"], anchor="w")
+        y += 22
+        tid = c.create_text(M + 4, y + 4, text="\n".join(self._diag_lines), fill=T.MUTED, font=f["mono"],
+                            anchor="nw", width=W - 2 * M - 8)  # fmt: skip
+        x0, y0, x1, y1 = c.bbox(tid)
+        card = c.create_polygon(*T.rounded_rect(M, y - 2, W - M, y1 + 6, 8), smooth=True, fill=T.RADAR_BG, outline=T.PANEL_EDGE)
+        c.tag_raise(tid, card)
+        return y1 + 6
+
     def _draw_footer(self, snap: Snapshot, y: float) -> float:
         c, f = self.canvas, self.fonts
         y += 8
         c.create_line(M + 4, y, W - M - 4, y, fill=T.PANEL_EDGE)
-        status = snap.status
+        status = f"{snap.status} · {snap.entity_count} entidades"
         if snap.world and not snap.map_name:
             status += " · " + snap.world
-        c.create_text(M + 2, y + 10, text=status, fill=T.MUTED, font=f["tiny"], anchor="w", width=W - 2 * M)
-        c.create_text(M + 2, y + 24, text="rueda: zoom · clic dcho: menú · doble clic: compacto",
-                      fill=T.FAINT, font=f["tiny"], anchor="w")  # fmt: skip
-        return y + 32
+        tid = c.create_text(M + 2, y + 5, text=status, fill=T.MUTED, font=f["tiny"], anchor="nw", width=W - 2 * M)
+        y = c.bbox(tid)[3] + 2
+        tid = c.create_text(M + 2, y, text="rueda: zoom · clic dcho: menú · doble clic: compacto",
+                            fill=T.FAINT, font=f["tiny"], anchor="nw")  # fmt: skip
+        return c.bbox(tid)[3] + 4
 
     def _draw_toasts(self, now: float) -> None:
         c, f = self.canvas, self.fonts
@@ -654,15 +689,19 @@ class Overlay:
     def _build_menu(self) -> None:
         m = tk.Menu(self.root, tearoff=0, bg=T.PANEL_HI, fg=T.TEXT, activebackground=T.ACCENT,
                     activeforeground=T.PANEL, bd=0, relief="flat", font=self.fonts["body"])  # fmt: skip
-        self._vars = {k: tk.BooleanVar(self.root) for k in ("compact", "sound", "click", "discovery", "anim")}
+        self._vars = {k: tk.BooleanVar(self.root) for k in ("compact", "sound", "click", "discovery", "anim", "diag")}
         m.add_checkbutton(label="Modo compacto", variable=self._vars["compact"], command=lambda: self._handle(("compact",)))
         m.add_checkbutton(label="Sonido", variable=self._vars["sound"], command=lambda: self._handle(("sound",)))
         m.add_checkbutton(label="Animaciones", variable=self._vars["anim"], command=self._toggle_animations)
-        m.add_checkbutton(label="Modo descubrimiento (F7)", variable=self._vars["discovery"], command=lambda: self._handle(("discovery",)))
-        m.add_checkbutton(label="El ratón atraviesa (F10)", variable=self._vars["click"], command=lambda: self._handle(("click_through",)))
+        m.add_checkbutton(label="Modo descubrimiento", variable=self._vars["discovery"], command=lambda: self._handle(("discovery",)))
+        m.add_checkbutton(label="El ratón atraviesa", variable=self._vars["click"], command=lambda: self._handle(("click_through",)))
         m.add_separator()
-        m.add_command(label="Spots pendientes otra vez (F6)", command=lambda: self._handle(("reset_spots",)))
-        m.add_command(label="Ocultar (F11)", command=lambda: self._handle(("toggle_overlay",)))
+        m.add_command(label="Spots pendientes otra vez", command=lambda: self._handle(("reset_spots",)))
+        m.add_command(label="Ocultar", command=lambda: self._handle(("toggle_overlay",)))
+        m.add_separator()
+        m.add_checkbutton(label="Diagnóstico", variable=self._vars["diag"], command=lambda: self._handle(("diagnostics",)))
+        m.add_command(label="Copiar diagnóstico", command=lambda: self._handle(("copy_diagnostics",)))
+        m.add_command(label="Abrir carpeta de logs", command=lambda: self._handle(("open_logs",)))
         m.add_separator()
         m.add_command(label="Cerrar", command=self.close)
         self.menu = m
@@ -673,10 +712,28 @@ class Overlay:
         self._vars["click"].set(bool(self.config["overlay"].get("click_through")))
         self._vars["discovery"].set(self.discovery)
         self._vars["anim"].set(self.animations)
+        self._vars["diag"].set(self.diagnostics)
         try:
             self.menu.tk_popup(e.x_root, e.y_root)
         finally:
             self.menu.grab_release()
+
+    def _open_logs(self) -> None:
+        folder = self.log_dir
+        if folder is None or not folder.exists():
+            self.toast("No hay carpeta de logs", T.WARN)
+            return
+        try:
+            if sys.platform == "win32":
+                import os
+
+                os.startfile(folder)  # type: ignore[attr-defined]
+            else:
+                import subprocess
+
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception:
+            self.toast(str(folder), T.MUTED, 6)
 
     def _toggle_animations(self) -> None:
         self.animations = not self.animations

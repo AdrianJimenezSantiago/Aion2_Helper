@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, TextIO
 
 from .config import Config
+from .diag import Diagnostics, log
 from .protocol import Despawn, Event, Spawn, Vec3, ZoneChange
 from .selfpos import SelfPositionTracker, distance, distance_2d
 from .spots import SpotStore
@@ -101,6 +102,11 @@ class CubeDetector:
             config["spot_check_radius_m"], config["spot_recheck_s"], config["units_per_meter"]
         )
         self.on_learned: Callable[[int], None] | None = None
+        self.diag = Diagnostics()
+
+    @property
+    def entity_count(self) -> int:
+        return len(self._entities)
 
     # ───── codes ─────
 
@@ -144,6 +150,7 @@ class CubeDetector:
             return
         m = self.locator.map
         self.world_status = f"Mapa: {m.name} ({len(m.cubes)} spots)"
+        log.info("Mapa reconocido: %s (ejes %s, altura %s)", m.map_id, self.locator.transform, self.locator.height is not None)
         if self.config["world_transform"] != self.locator.transform:
             self.config["world_transform"] = self.locator.transform
             self.config.save()
@@ -178,6 +185,7 @@ class CubeDetector:
         ):
             self.config["cube_codes"] = list(self.config["cube_codes"]) + [e.code]
             self._write({"type": "learned", "t": self.clock(), "code": e.code})
+            log.info("Código de Hidden Cube aprendido: %s", e.code)
             if self.on_learned:
                 self.on_learned(e.code)
         self.config.save()
@@ -188,15 +196,16 @@ class CubeDetector:
         t = self.clock() if t is None else t
         with self._lock:
             if isinstance(event, Spawn):
+                self.diag.spawn(event.code, event.pos)
                 self._spawn(event, t)
             elif isinstance(event, Despawn):
+                self.diag.count("despawns")
                 self._entities.pop(event.entity_id, None)
             elif isinstance(event, ZoneChange):
+                # The map vote is not reset here: it follows a sliding window (see WorldLocator).
+                self.diag.zone(t)
                 self._entities.clear()
                 self.tracker.clear_anchors()
-                if self.locator:
-                    self.locator.reset()
-                    self.world_status = f"{self.world.cube_count} spots de {self.world.source} · buscando mapa"
                 self._write({"type": "zone", "t": t})
 
     def new_connection(self, t: float | None = None) -> None:
@@ -204,6 +213,9 @@ class CubeDetector:
         with self._lock:
             self.learner.new_session()
             self.handle(ZoneChange(), t)
+            if self.locator:
+                self.locator.reset()
+                self.world_status = f"{self.world.cube_count} spots de {self.world.source} · buscando mapa"
 
     def _spawn(self, sp: Spawn, t: float) -> None:
         old = self._entities.get(sp.entity_id)

@@ -83,12 +83,12 @@ Si quieres hacerlo a mano (por ejemplo, sin los spots descargados):
 **Forma rápida:**
 1. Arranca en modo descubrimiento: `python -m aion2_helper --discovery --log`
 2. Busca un cubo como siempre (baja la música y los efectos: el cubo emite un zumbido brillante).
-3. Ponte **al lado** del cubo y pulsa **F9**. Se añade a `cube_codes` el código de la entidad más
+3. Ponte **al lado** del cubo y pulsa **Ctrl+Mayús+F9**. Se añade a `cube_codes` el código de la entidad más
    cercana (a menos de 8 m). Si aún no hay posición propia, se usa la entidad que apareció más
    recientemente; en ese caso es mejor usar la forma de abajo.
 
-**Forma robusta** (si F9 elige mal):
-1. Juega con `--log` y pulsa **F8** cada vez que estés junto a un cubo (con 3 o 4 basta).
+**Forma robusta** (si Ctrl+Mayús+F9 elige mal):
+1. Juega con `--log` y pulsa **Ctrl+Mayús+F8** cada vez que estés junto a un cubo (con 3 o 4 basta).
 2. Analiza el registro:
    ```
    python -m aion2_helper analyze "%APPDATA%\Aion2Helper\logs\discovery-XXXX.jsonl"
@@ -96,20 +96,25 @@ Si quieres hacerlo a mano (por ejemplo, sin los spots descargados):
 3. Copia el código con mejor puntuación en `cube_codes` de `%APPDATA%\Aion2Helper\config.json`.
 
 Pueden existir varios códigos (cubo con llave, cubo gratuito y versión submarina). Con los spots
-descargados, `analyze` los ordena solo, sin marcas F8. Para colorear un código como gratuito, pon
+descargados, `analyze` los ordena solo, sin marcas. Para colorear un código como gratuito, pon
 `"cube_kinds": {"1234567": "free"}` en la configuración.
 
 ## Atajos (configurables en `config.json`)
 
 | Tecla | Acción |
 |---|---|
-| F6 | Vuelve a poner todos los spots como pendientes (por ejemplo, al cambiar de canal) |
-| F7 | Modo descubrimiento: muestra las entidades cercanas con su código |
-| F8 | Marca "aquí hay un cubo" en el registro (para `analyze`) |
-| F9 | La entidad más cercana es un cubo: guarda su código |
-| F10 | Click-through on/off (el ratón atraviesa el overlay) |
-| F11 | Mostrar/ocultar overlay |
-| Ctrl+F11 | Modo compacto (solo el radar) |
+| Ctrl+Mayús+F5 | Panel de diagnóstico |
+| Ctrl+Mayús+F6 | Vuelve a poner todos los spots como pendientes (por ejemplo, al cambiar de canal) |
+| Ctrl+Mayús+F7 | Modo descubrimiento: muestra las entidades cercanas con su código |
+| Ctrl+Mayús+F8 | Marca "aquí hay un cubo" en el registro (para `analyze`) |
+| Ctrl+Mayús+F9 | La entidad más cercana es un cubo: guarda su código |
+| Ctrl+Mayús+F10 | Click-through on/off (el ratón atraviesa el overlay) |
+| Ctrl+Mayús+F11 | Mostrar/ocultar overlay |
+| Ctrl+Mayús+F12 | Modo compacto (solo el radar) |
+
+Llevan Ctrl+Mayús porque los atajos globales no se "comen" la tecla: con F6–F8 solos, usar un objeto
+de la barra del juego también activaba el overlay. Si tu configuración tenía las teclas antiguas, se
+cambian solas.
 
 Con el ratón:
 
@@ -167,6 +172,7 @@ en **coordenadas del mundo** (`x,y,z`).
 ```
 python -m aion2_helper [--discovery] [--log [ruta]] [--record juego.pcap] [--iface NOMBRE|all]
 python -m aion2_helper replay juego.pcap [--fast] [--headless]
+python -m aion2_helper diagnose juego.pcap
 python -m aion2_helper analyze registro.jsonl
 python -m aion2_helper update-spots [--from carpeta]
 python -m aion2_helper import-spots spots.csv
@@ -176,6 +182,38 @@ python -m aion2_helper ifaces
 - `--record` guarda el tráfico del juego para reproducirlo después con `replay`. El .pcap contiene
   nombres de personajes, así que no lo compartas.
 - `--iface all` si usas VPN o un reductor de ping y no se detecta la conexión.
+
+## No detecta nada: diagnóstico
+
+Las luces de la cabecera dicen en qué paso se queda:
+
+| Luz en ámbar o rojo | Qué significa |
+|---|---|
+| JUEGO | No se encuentra la conexión del juego (Npcap, permisos de administrador, VPN: prueba `--iface all`) |
+| POSICIÓN | Aún no se ha aprendido el paquete con tu posición. Muévete un rato |
+| SPOTS | Hay spots, pero el mapa no se reconoce todavía |
+| CÓDIGO | Aún no se ha visto ningún cubo sobre un spot conocido |
+
+Para ver el detalle:
+
+- **Panel de diagnóstico** (clic derecho > *Diagnóstico*, o Ctrl+Mayús+F5): paquetes recibidos,
+  bloques LZ4, opcodes más frecuentes, spawns con posición, votos de cada mapa, lo cerca que caen los
+  spawns de los puntos de cada mapa, y el estado del aprendizaje de la posición propia.
+- **Copiar diagnóstico** (clic derecho): copia ese texto al portapapeles para compartirlo. No contiene
+  nombres de personajes ni chat.
+- **Log**: `%APPDATA%\Aion2Helper\logs\aion2helper.log`, con el mismo informe cada 30 s, la conexión
+  elegida, el mapa reconocido y los errores (clic derecho > *Abrir carpeta de logs*).
+- **Grabar y analizar**: `python -m aion2_helper --record juego.pcap` mientras juegas un par de minutos
+  y luego `python -m aion2_helper diagnose juego.pcap`. El .pcap contiene nombres de personajes: comparte
+  solo la salida de `diagnose`.
+
+Cómo leer el informe:
+
+- `Spawns: 0`: no llegan registros de spawn. Mira los opcodes más frecuentes; quizá un parche los ha
+  renumerado (ver la sección siguiente).
+- Hay spawns, pero los `votos` están vacíos y la `alineación` da medianas de decenas de metros en todos
+  los mapas: las coordenadas del juego no coinciden con las de los spots.
+- `Posición propia: buscando` durante varios minutos: no se encuentra el paquete de movimiento.
 
 ## Si deja de funcionar tras un parche
 
@@ -213,7 +251,8 @@ pytest
 | `aion2_helper/detector.py` | Estado del mundo y cubos activos |
 | `aion2_helper/overlay.py` | Overlay tkinter (dibujo, efectos, ratón, menú) y atajos globales |
 | `aion2_helper/theme.py` | Paleta, tipografías y geometría del overlay |
-| `aion2_helper/analyze.py` | Ranking de códigos a partir de las marcas F8 |
+| `aion2_helper/analyze.py` | Ranking de códigos por spots o por marcas |
+| `aion2_helper/diag.py` | Contadores de cada etapa, informe y log |
 | `aion2_helper/spots.py` | Spots vistos por ti |
 | `aion2_helper/community.py` | Descarga y conversión de los spots de aion2.th.gl |
 | `aion2_helper/cborx.py` | Decodificador CBOR con las extensiones de cbor-x (formato de th.gl) |

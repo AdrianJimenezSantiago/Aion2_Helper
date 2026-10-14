@@ -30,6 +30,10 @@ except ImportError:  # pragma: no cover - only hit when the dependency is missin
 
 MAX_PACKET_BYTES = 65535
 MAX_FRAGMENT_WAIT_BYTES = 16384
+# A bundle may run past that: the zone-load bundle, which carries the spawns
+# around you, was 17 KB in a capture of 2026-10-09 (A2Tools). Its FF FF header
+# is what tells it from a garbage length, so bundles are waited for up to this.
+MAX_BUNDLE_WAIT_BYTES = MAX_PACKET_BYTES
 MAX_DECOMPRESSED_BYTES = 1_000_000
 MAX_ENTITY_ID = 9_999_999
 
@@ -100,7 +104,17 @@ def _tls_record_size(data: bytes, at: int) -> int | None:
     return 5 + ln if 0 < ln <= 16384 + 256 else None
 
 
-def walk(data: bytes, inner: bool = False) -> tuple[list[Frame], int]:
+def _looks_like_bundle(data: bytes, at: int) -> bool | None:
+    """Whether the frame payload at ``at`` starts like a bundle; None if too few bytes yet."""
+    if at + 6 > len(data):
+        return None
+    if data[at] != 0xFF or data[at + 1] != 0xFF:
+        return False
+    size = struct.unpack_from("<I", data, at + 2)[0]
+    return 0 < size <= MAX_DECOMPRESSED_BYTES
+
+
+def walk(data: bytes, inner: bool = False, stats: dict | None = None) -> tuple[list[Frame], int]:
     """Splits a stream buffer into frames, stopping at the first incomplete one.
 
     Returns the frames and how many bytes were consumed. A capture that starts
@@ -110,6 +124,7 @@ def walk(data: bytes, inner: bool = False) -> tuple[list[Frame], int]:
     frames: list[Frame] = []
     offset = 0
     n = len(data)
+    resync = 0
     while offset < n:
         if data[offset] == 0x00:
             offset += 1
@@ -126,21 +141,28 @@ def walk(data: bytes, inner: bool = False) -> tuple[list[Frame], int]:
             if inner or offset + 5 > n:
                 break
             offset += 1
+            resync += 1
             continue
         total = _frame_size(value, vlen)
         if total is None or total > MAX_PACKET_BYTES:
             offset += 1
+            resync += 1
             continue
         if offset + total > n:
             if inner:
                 break
             if total > MAX_FRAGMENT_WAIT_BYTES:
-                offset += 1
-                continue
+                bundle = _looks_like_bundle(data, offset + vlen)
+                if bundle is False or total > MAX_BUNDLE_WAIT_BYTES:
+                    offset += 1
+                    resync += 1
+                    continue
             break  # a legitimate fragment: wait for more bytes
         is_bundle = vlen + 1 < total and data[offset + vlen] == 0xFF and data[offset + vlen + 1] == 0xFF
         frames.append(Frame(offset, offset + total, vlen, is_bundle))
         offset += total
+    if stats is not None and resync:
+        stats["resync"] = stats.get("resync", 0) + resync
     return frames, offset
 
 
@@ -250,13 +272,17 @@ DEFAULT_OPCODES = Opcodes.from_config({})
 class ServerStreamParser:
     """Turns the server-to-client byte stream into entity events."""
 
-    def __init__(self, opcodes: Opcodes = DEFAULT_OPCODES):
+    def __init__(self, opcodes: Opcodes = DEFAULT_OPCODES, diag=None):
         self.op = opcodes
+        self.diag = diag
         self._spawn_leads = {c[0] for c in opcodes.spawn}
 
     def consume(self, buffer: bytes) -> tuple[list[Event], int]:
         events: list[Event] = []
-        frames, consumed = walk(buffer)
+        stats: dict = {}
+        frames, consumed = walk(buffer, stats=stats)
+        if self.diag is not None and stats.get("resync"):
+            self.diag.count("resync", stats["resync"])
         for f in frames:
             if f.bundle:
                 self._bundle(buffer[f.start + f.payload_start : f.end], events)
@@ -266,6 +292,8 @@ class ServerStreamParser:
 
     def _bundle(self, payload: bytes, events: list[Event], depth: int = 0) -> None:
         data = decompress_bundle(payload)
+        if self.diag is not None:
+            self.diag.count("bundles" if data is not None else "bundle_fail")
         if data is None or depth > 4:
             return
         frames, _ = walk(data, inner=True)
@@ -280,6 +308,9 @@ class ServerStreamParser:
         if o <= 0 or o + 2 > len(packet):
             return
         op = packet[o : o + 2]
+        if self.diag is not None:
+            self.diag.count("frames")
+            self.diag.opcode(op)
         if op in self.op.zone_change and o + 2 < len(packet) and packet[o + 2] == 0x00:
             events.append(ZoneChange())
             return

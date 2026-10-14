@@ -48,15 +48,29 @@ DEFAULTS: dict = {
     "sound": True,
     # compact: radar only; animations: radar sweep, pulses and pings (off = lighter on the CPU).
     "overlay": {"x": 40, "y": 200, "alpha": 0.9, "click_through": False, "compact": False, "animations": True},
+    # Ctrl+Shift so they never fire with the game's own F-key slots (potions, items...):
+    # global hotkeys do not swallow the key, the game gets it too.
     "hotkeys": {
-        "mark": "<f8>",
-        "tag_nearest": "<f9>",
-        "click_through": "<f10>",
-        "toggle_overlay": "<f11>",
-        "discovery": "<f7>",
-        "reset_spots": "<f6>",
-        "compact": "<ctrl>+<f11>",
+        "diagnostics": "<ctrl>+<shift>+<f5>",
+        "reset_spots": "<ctrl>+<shift>+<f6>",
+        "discovery": "<ctrl>+<shift>+<f7>",
+        "mark": "<ctrl>+<shift>+<f8>",
+        "tag_nearest": "<ctrl>+<shift>+<f9>",
+        "click_through": "<ctrl>+<shift>+<f10>",
+        "toggle_overlay": "<ctrl>+<shift>+<f11>",
+        "compact": "<ctrl>+<shift>+<f12>",
     },
+}
+
+# Bare F-keys used by earlier versions; a saved config that still has them is moved to the new ones.
+OLD_HOTKEYS = {
+    "mark": "<f8>",
+    "tag_nearest": "<f9>",
+    "click_through": "<f10>",
+    "toggle_overlay": "<f11>",
+    "discovery": "<f7>",
+    "reset_spots": "<f6>",
+    "compact": "<ctrl>+<f11>",
 }
 
 
@@ -90,6 +104,9 @@ class Config:
         if path.exists():
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
+        hk = data.get("hotkeys")
+        if isinstance(hk, dict):
+            data["hotkeys"] = {k: v for k, v in hk.items() if OLD_HOTKEYS.get(k) != v}
         return cls(path, data)
 
     def save(self) -> None:

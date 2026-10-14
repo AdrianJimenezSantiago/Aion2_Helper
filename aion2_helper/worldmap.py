@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
@@ -170,7 +170,15 @@ class WorldData:
 
 
 class WorldLocator:
-    """Votes for the (map, axes) pair whose fixed points the spawned entities sit on."""
+    """Votes for the (map, axes) pair whose fixed points the spawned entities sit on.
+
+    The vote runs over a sliding window of recent positions rather than being
+    reset at every zone-change record: if that record also marks sub-areas,
+    a reset would keep the map unknown forever. A new map wins as soon as its
+    points clearly out-vote the current one's in the window.
+    """
+
+    WINDOW = 400  # positions remembered for the vote
 
     def __init__(self, world: WorldData, transform: str | None = None):
         self.world = world
@@ -178,6 +186,7 @@ class WorldLocator:
         self.map_id: str | None = None
         # Height tolerance in use: MATCH_HEIGHT, or None once only 2D matched.
         self.height: float | None = MATCH_HEIGHT
+        self._window: deque[tuple[list[tuple[str, str]], list[tuple[str, str]]]] = deque(maxlen=self.WINDOW)
         self._scores: dict[tuple[str, str], int] = defaultdict(int)
         self._scores_2d: dict[tuple[str, str], int] = defaultdict(int)
         self.observed = 0
@@ -187,40 +196,57 @@ class WorldLocator:
         return self.world.maps.get(self.map_id) if self.map_id else None
 
     def reset(self) -> None:
-        """Zone change: the map is unknown again (the axes are not)."""
+        """A new connection: forget the map and the votes (the axes stay)."""
         self.map_id = None
+        self._window.clear()
         self._scores.clear()
         self._scores_2d.clear()
         self.observed = 0
 
+    def top_scores(self, n: int = 4) -> list[tuple[tuple[str, str], int]]:
+        return sorted(self._scores.items(), key=lambda kv: -kv[1])[:n]
+
     def observe(self, pos: Vec3) -> bool:
-        """Feeds an entity position. Returns True when this located the map."""
-        if self.map_id is not None:
-            return False
+        """Feeds an entity position. Returns True when this located (or changed) the map."""
         self.observed += 1
         names = [self.transform] if self.transform else list(TRANSFORMS)
+        hits, hits_2d = [], []
         for name in names:
             p = to_data(name, pos)
             for map_id, m in self.world.maps.items():
                 near = m.anchors.within(p, MATCH_RADIUS)
                 if near:
-                    self._scores_2d[(map_id, name)] += 1
+                    hits_2d.append((map_id, name))
                     if any(abs(m.anchors.points[i][2] - p[2]) <= MATCH_HEIGHT for i in near):
-                        self._scores[(map_id, name)] += 1
+                        hits.append((map_id, name))
+        if len(self._window) == self._window.maxlen:
+            old, old_2d = self._window[0]
+            for k in old:
+                self._scores[k] -= 1
+            for k in old_2d:
+                self._scores_2d[k] -= 1
+        self._window.append((hits, hits_2d))
+        for k in hits:
+            self._scores[k] += 1
+        for k in hits_2d:
+            self._scores_2d[k] += 1
         if self._decide(self._scores, LOCATE_MIN_HITS):
             self.height = MATCH_HEIGHT
             return True
-        if self.observed >= LOCATE_2D_AFTER and self._decide(self._scores_2d, LOCATE_2D_MIN_HITS):
+        if self.map_id is None and self.observed >= LOCATE_2D_AFTER and self._decide(self._scores_2d, LOCATE_2D_MIN_HITS):
             self.height = None
             return True
         return False
 
     def _decide(self, scores: dict[tuple[str, str], int], min_hits: int) -> bool:
-        if not scores:
+        ranked = sorted(((k, v) for k, v in scores.items() if v > 0), key=lambda kv: -kv[1])
+        if not ranked:
             return False
-        ranked = sorted(scores.items(), key=lambda kv: -kv[1])
         (map_id, name), best = ranked[0]
-        second = ranked[1][1] if len(ranked) > 1 else 0
+        if (map_id, name) == (self.map_id, self.transform):
+            return False
+        current = scores.get((self.map_id, self.transform), 0) if self.map_id else 0
+        second = max([v for k, v in ranked[1:]] + [current, 0])
         if best >= min_hits and best >= LOCATE_MARGIN * max(second, 1):
             self.map_id = map_id
             self.transform = name

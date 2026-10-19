@@ -60,9 +60,8 @@ Usa la misma técnica que los DPS meters open source del juego
 - `2a 37 <id> … <vx> <vy> <vz> <yaw>` y `28 37` / `29 37 <id> <2 bytes> <x> <y> <z> <vx> <vy> <vz>`: al
   volar, velocidad (y posición) 10 veces por segundo.
 - `33 36 <id> <4 bytes> <07|37|3f> <long.> <nombre> <servidor u16>`: el personaje con el que entras
-  al mundo. Es tu entidad, sin dudas, pero **solo llega al entrar desde la selección de personaje**
-  (así lo hace [PetTracker](https://github.com/0Fox2Give/PetTracker)). Solo cuenta si viene completo;
-  el nombre se comprueba y no se guarda.
+  al mundo. Es tu entidad, sin dudas, pero **solo llega al entrar desde la selección de personaje**.
+  Solo cuenta si viene completo; el nombre se comprueba y no se guarda.
 - `4a 36 <id> …`: tus estadísticas; solo llegan de tu personaje, así que su id también es tu entidad.
   Sin ninguno de los dos, tu entidad se deduce de quién se mueve sin haber aparecido como monstruo,
   objeto o mascota (los flags `05` no sirven: otros jugadores también los llevan).
@@ -79,7 +78,7 @@ Los paquetes que envía tu cliente van **cifrados por completo** (comprobado en 
 movimiento de tu propia entidad, que el servidor envía al empezar a moverte, girar o pararte. Mientras
 no se tiene tu posición, se estima (radar con "posición aproximada"): junto al objetivo de tu última
 habilidad (unos 10 m de error), o en el centro del círculo donde las entidades entran y salen de tu
-radio de visión (20-30 m; idea de Shugo.GG), o, sin más, en el centro de lo que el servidor te muestra.
+radio de visión (20-30 m), o, sin más, en el centro de lo que el servidor te muestra.
 Con tu entidad reconocida, tu posición avanza con cada registro
 de velocidad (10 por segundo) y se corrige con cada posición exacta. Si no hay velocidad, el radar desliza tu posición con
 tu velocidad (la de `29 37`, o la medida entre tus registros) en la dirección de tu yaw, hasta que

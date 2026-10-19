@@ -725,7 +725,7 @@ def test_flying_records_carry_your_velocity():
 
 
 def test_login_record_fixes_your_entity_and_casts_turn_your_arrow():
-    """The 33 36 login record names you for sure (PetTracker); 02 38 says where you face."""
+    """The 33 36 login record names you for sure; 02 38 says where you face."""
     from aion2_helper.protocol import EntityFacing, EntityMove, SelfIdentity, ZoneChange
 
     det, clock = _det()
@@ -745,7 +745,7 @@ def test_login_record_fixes_your_entity_and_casts_turn_your_arrow():
 
 
 def test_position_is_the_centre_of_where_entities_enter_and_leave_your_view():
-    """Shugo.GG: what comes into and leaves your view lies on a circle around you."""
+    """What comes into and leaves your view lies on a circle around you."""
     import math
     import random
 

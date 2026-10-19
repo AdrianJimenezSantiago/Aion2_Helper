@@ -10,7 +10,7 @@ What is known comes from the open-source DPS meters that read the same stream
 
     41 36 <id varint> <kind> <kind flags> <name flags> [<len u8> <name> if name flags & 1]
           <code u32> <2 bytes> <x f32> <y f32> <z f32> ...   NPC / summon spawn (40 36 before June
-                                                     2026; layout from Shugo.GG's decoder). Kinds
+                                                     2026). Kinds
                                                      1d, 1f and 5f are summons and pets, whose tail
                                                      names their owner: <id> 01 02 <12 bytes> 07 02 06 <owner u32>
     42 36 <id varint> <0 varint> <flag>      death (flag 3) or gone from the world (flag 7)
@@ -38,14 +38,14 @@ What is known comes from the open-source DPS meters that read the same stream
                                                      caster's position: yours when you cast it on you
     33 36 <id varint> <4 bytes> <07|37|3f> <len u8> <name utf-8> <server u16> ...   the character
                                                      you log in with: your entity, for sure. Only sent
-                                                     when you enter the world from character selection
-                                                     (PetTracker, 0Fox2Give), so start before logging in
+                                                     when you enter the world from character selection,
+                                                     so start before logging in
     02 38 <id varint> 00 <skill u32> <u8> <00|02> <target varint> <facing f32 deg> [<x> <y> <z> if 02]
           <3 varints>                                a skill cast, with where its caster faces (same
                                                      angle as the move yaw: 120.0 vs 119.97, live);
                                                      your flight buffs send it about once a second
     3c 37 <id varint> 03 <x> <y> <z> <facing f32 deg> (00 00|07 02) 01 <skill u32> <4 bytes> <varint>
-                                                     an entity acting: its position and facing (PetTracker)
+                                                     an entity acting: its position and facing
     34 36 <id varint> <kind u8> 00 <code u32> <x> <y> <z> ...   an object appeared: gathering
                                                      nodes (1500000 sat on an odyle node to 0.0 m),
                                                      Empyrean Traces, and the Hidden Cubes
@@ -451,7 +451,7 @@ def parse_cast_facing(packet: bytes, o: int) -> EntityFacing | None:
 
 
 def parse_action_pose(packet: bytes, o: int) -> EntityMove | None:
-    """``3c 37``: an entity acting, with its position and facing (layout from PetTracker)."""
+    """``3c 37``: an entity acting, with its position and facing."""
     eid, l1 = read_varint(packet, o + 2)
     p = o + 2 + l1
     if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID) or p + 29 > len(packet) or packet[p] != 0x03:
@@ -547,7 +547,7 @@ SUMMON_KINDS = (0x1D, 0x1F, 0x5F)
 
 
 def _spawn_owner(data: bytes, at: int, idbytes: bytes) -> int | None:
-    """A summon's tail: ``<its id> 01 02 <12 bytes> 07 02 06 <owner u32>`` (Shugo.GG)."""
+    """A summon's tail: ``<its id> 01 02 <12 bytes> 07 02 06 <owner u32>``."""
     n = len(idbytes)
     i = data.find(idbytes, at)
     while i >= 0 and i + n + 21 <= len(data):

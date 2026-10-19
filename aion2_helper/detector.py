@@ -55,12 +55,12 @@ SELF_MATCH_S = 20.0
 TELEPORT_FRESH_S = 8.0
 APPROX_WINDOW_S = 30.0
 # Entities come into and leave your view on a circle around you: its centre is where you are,
-# 20-30 m off (Shugo.GG). Spawns right after a zone load fill the whole view and are left out.
+# 20-30 m off. Spawns right after a zone load fill the whole view and are left out.
 EDGE_WINDOW_S = 20.0
 EDGE_MIN_POINTS = 6
 EDGE_SETTLE_S = 3.0
 EDGE_RADIUS_RANGE = (1500.0, 30000.0)
-# A skill you aim at a target puts you near it, about 10 m off (Shugo.GG).
+# A skill you aim at a target puts you near it, about 10 m off.
 NEAR_TARGET_S = 10.0
 # Tagging picks the entity nearest to you, but only within this many metres.
 TAG_RADIUS_M = 8.0
@@ -362,7 +362,7 @@ class CubeDetector:
             elif isinstance(event, SelfIdentity):
                 if event.confirmed:
                     # The login record, name and all: sent only when you enter the world, which is
-                    # why the tool has to be running before you pick your character (PetTracker).
+                    # why the tool has to be running before you pick your character.
                     self._confirm_self(event.entity_id, "entrada al mundo 33 36")
                 else:
                     # A bare 33 36 is only a hint (a live session got 16329 there, 2348 in the moves).

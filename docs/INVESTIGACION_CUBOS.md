@@ -79,60 +79,36 @@ El radio a partir del cual un spot cuenta como revisado empieza en 40 m y se aju
 mediana de la distancia a la que te aparecen los cubos (el servidor solo envía las entidades que tienes
 cerca).
 
-### 3.1 Lo aprendido de PetTracker
+### 3.1 Detalles del protocolo
 
-[PetTracker](https://github.com/0Fox2Give/PetTracker) es un overlay de mascotas que lee el mismo
-tráfico. El repositorio solo publica el instalador y el sistema de actualizaciones, no el código; lo
-que sigue sale de inspeccionar su versión pública 0.1.43 y se ha contrastado con nuestras trazas.
+Contrastados con nuestras trazas en directo.
 
-- **Hay que abrirlo antes de entrar al personaje.** Su entidad propia sale de `33 36`, que el servidor
-  manda al entrar al mundo: `<id> <4 bytes> <07|37|3f> <long.> <nombre UTF-8> <servidor u16>`. Solo lo
-  acepta con todo ese formato (id entre 100 y 999 999, nombre de 1 a 30 letras, dígitos, `'`, `-` o `_`).
-  Nosotros lo tomábamos como pista porque un `33 36` sin validar no coincidía con los movimientos;
-  ahora uno completo fija tu entidad igual que `4a 36`, y uno incompleto sigue siendo una pista.
-- **Distingue entidades por formato exacto, no por heurística.** Cada registro se valida hasta el
-  último byte (longitud exacta, rangos del código de NPC 1 000 000-10 000 000 y de habilidad
-  11 000 000-20 000 000), y nunca adivina quién eres: sin `33 36`, no calcula nada tuyo.
-- **`02 38`** (lanzar habilidad) lleva la orientación en grados de quien la lanza; en nuestras trazas
-  coincide con el yaw de los movimientos (120,0 / 119,97; −7,4 / 352,6). Llega también de otros
-  jugadores: solo se usa la de tu entidad.
+- **Hay que abrir la herramienta antes de entrar al personaje.** Tu entidad sale de `33 36`, que el
+  servidor manda al entrar al mundo: `<id> <4 bytes> <07|37|3f> <long.> <nombre UTF-8> <servidor u16>`.
+  Solo cuenta con todo ese formato (id entre 100 y 999 999, nombre de 1 a 30 letras, dígitos, `'`, `-`
+  o `_`); uno incompleto es solo una pista. Llega al entrar al juego, no al teletransportarte: hay que
+  volver a la selección de personaje, o **entrar en una mazmorra y salir**, que también lo reenvía.
+- **Cada registro se valida hasta el último byte**: longitud exacta, código de NPC entre 1 000 000 y
+  10 000 000, habilidad entre 11 000 000 y 20 000 000.
+- **`02 38`** (lanzar habilidad) lleva la orientación en grados de quien la lanza; coincide con el yaw
+  de los movimientos (120,0 / 119,97; −7,4 / 352,6). Llega también de otros jugadores: solo se usa la
+  de tu entidad. En modo `02` lleva además la posición del objetivo.
 - **`3c 37`** da posición y orientación de una entidad que actúa.
-- **Al teletransportarte (`23 36`) vacía todo** lo que tenía de alrededor, como ya hacemos.
-- Filtra las conexiones por proceso (`AION2`, `AION2-Win64-Shipping`) con la tabla TCP de Windows y
-  reordena los segmentos TCP con una ventana de 1 s. Nosotros ya fijamos la conexión del juego y
-  reordenamos por número de secuencia.
-
-### 3.2 Lo aprendido de Shugo.GG App
-
-[Shugo.GG App](https://shugo.gg/app) (0.3.95) es una app Tauri: Rust para la captura y los
-decodificadores, y una interfaz web. Se ha analizado con permiso expreso de su autor.
-
-- **Los opcodes no van en el programa.** Se descargan con la cuenta (`protocol.json` dentro de un
-  paquete cifrado con una clave de la cuenta) y se asocian a ids lógicos: así sobreviven a los parches
-  sin publicar una versión nueva. El paquete cifrado no se ha abierto. Nosotros, en cambio, aprendemos los
-  opcodes de movimiento solos y dejamos el resto en `config.json`.
-- **Tu personaje llega al entrar al juego**, no al teletransportarte: hay que volver a la selección de
-  personaje, o **entrar en una mazmorra y salir**, que también lo reenvía.
-- **Tu posición, cuando no es exacta**, sale de dos estimaciones que hemos copiado como idea:
-  - **Borde de la visión** (`viewEdge`, 20-30 m): las entidades aparecen y desaparecen al entrar y salir
-    de tu radio de visión, así que tú estás en el centro de ese círculo. Se descartan los spawns de los
-    3 s que siguen a una carga de zona, que llenan toda la visión.
-  - **Cerca del objetivo** (`nearTarget`, ~10 m): al lanzar una habilidad contra algo, estás cerca de
-    ello. `02 38` en modo `02` lleva la posición del objetivo.
-- Según Shugo, andar no envía tu posición. En nuestras trazas sí llegan `1c 37` y `1d 37` de tu entidad
-  mientras andas, así que mantenemos nuestro seguimiento y usamos sus estimaciones solo como respaldo.
-- Sus decodificadores (Rust, desensamblados) confirman y afinan formatos:
-  - **Aparición de NPC**: `<id> <tipo> <flags> <flags de nombre> [<long. u8> <nombre> si flags & 1]
-    <código u32> <2 bytes> <x> <y> <z>`. Lo leemos ahora con este orden fijo (y con nombre, para los
-    NPC con nombre) y solo si no encaja buscamos el código como antes.
-  - **Invocaciones y mascotas** (tipos `1d`, `1f`, `5f`): al final del registro va su dueño,
-    `<id> 01 02 <12 bytes> 07 02 06 <dueño u32>`. Lo guardamos en el registro de descubrimiento.
-  - **Carga de zona**: `<entidad 0> <5 bytes a cero> <x> <y> <z> <valor u32> <cola>`: nuestro `23 36`.
-  - Movimiento = tipo, posición, dirección, valor, parada, aterrizaje, orientación; muerte = víctima,
-    flags de combate, flags de desaparición, motivo, habilidad, asesino.
-  - No hay decodificador de objetos (`34 36`): Shugo no ve nodos, Empyrean Traces ni cubos en directo;
-    los de su mapa salen de su web.
-  - Qué opcode corresponde a cada decodificador solo está en el `protocol.json` cifrado.
+- **Tu posición, cuando no es exacta**, se estima:
+  - **Borde de la visión** (20-30 m): las entidades aparecen y desaparecen al entrar y salir de tu
+    radio de visión, así que tú estás en el centro de ese círculo. Se descartan los spawns de los 3 s
+    que siguen a una carga de zona, que llenan toda la visión.
+  - **Cerca del objetivo** (~10 m): al lanzar una habilidad contra algo, estás cerca de ello.
+  - Mientras andas también llegan `1c 37` y `1d 37` de tu entidad, que mandan sobre las estimaciones.
+- **Aparición de NPC**: `<id> <tipo> <flags> <flags de nombre> [<long. u8> <nombre> si flags & 1]
+  <código u32> <2 bytes> <x> <y> <z>`. Se lee con este orden fijo (también los NPC con nombre) y solo
+  si no encaja se busca el código como antes.
+- **Invocaciones y mascotas** (tipos `1d`, `1f`, `5f`): al final del registro va su dueño,
+  `<id> 01 02 <12 bytes> 07 02 06 <dueño u32>`. Se guarda en el registro de descubrimiento.
+- **Carga de zona** (`23 36`): `<entidad 0> <5 bytes a cero> <x> <y> <z> <valor u32> <cola>`. Al
+  teletransportarte se vacía todo lo que había alrededor.
+- Los opcodes pueden cambiar con los parches: los de movimiento se aprenden solos y el resto está en
+  `config.json`.
 
 ## 4. Límites y trabajo futuro
 

@@ -54,6 +54,14 @@ SELF_MATCH_S = 20.0
 # own entity, your position is estimated from the entities around you.
 TELEPORT_FRESH_S = 8.0
 APPROX_WINDOW_S = 30.0
+# Entities come into and leave your view on a circle around you: its centre is where you are,
+# 20-30 m off (Shugo.GG). Spawns right after a zone load fill the whole view and are left out.
+EDGE_WINDOW_S = 20.0
+EDGE_MIN_POINTS = 6
+EDGE_SETTLE_S = 3.0
+EDGE_RADIUS_RANGE = (1500.0, 30000.0)
+# A skill you aim at a target puts you near it, about 10 m off (Shugo.GG).
+NEAR_TARGET_S = 10.0
 # Tagging picks the entity nearest to you, but only within this many metres.
 TAG_RADIUS_M = 8.0
 
@@ -107,6 +115,52 @@ def bearing(src: Vec3, dst: Vec3) -> float:
     (x, y) into map (y, x) drawn with y growing downwards) has +X to the east and
     +Y to the south. ``radar_rotation_deg`` still turns it if needed."""
     return math.degrees(math.atan2(dst[0] - src[0], -(dst[1] - src[1]))) % 360
+
+
+def fit_circle(points: list[Vec3]) -> tuple[float, float, float] | None:
+    """Centre and radius of the circle through ``points`` (x, y), by least squares (Kasa).
+
+    None when they do not lie on a plausible view circle all around a centre."""
+    n = len(points)
+    mx = sum(p[0] for p in points) / n
+    my = sum(p[1] for p in points) / n
+    # x^2 + y^2 + a x + b y + c = 0, in coordinates centred on the mean for stability
+    sxx = sxy = syy = sx = sy = szx = szy = sz = 0.0
+    for p in points:
+        x, y = p[0] - mx, p[1] - my
+        z = x * x + y * y
+        sxx += x * x
+        sxy += x * y
+        syy += y * y
+        sx += x
+        sy += y
+        szx += z * x
+        szy += z * y
+        sz += z
+    m = [[sxx, sxy, sx, -szx], [sxy, syy, sy, -szy], [sx, sy, float(n), -sz]]
+    for i in range(3):  # Gaussian elimination with partial pivoting
+        k = max(range(i, 3), key=lambda r: abs(m[r][i]))
+        if abs(m[k][i]) < 1e-9:
+            return None
+        m[i], m[k] = m[k], m[i]
+        for r in range(3):
+            if r != i:
+                f = m[r][i] / m[i][i]
+                m[r] = [a - f * b for a, b in zip(m[r], m[i])]
+    a, b, c = (m[i][3] / m[i][i] for i in range(3))
+    cx, cy = -a / 2, -b / 2
+    r2 = cx * cx + cy * cy - c
+    if r2 <= 0:
+        return None
+    r = math.sqrt(r2)
+    if not (EDGE_RADIUS_RANGE[0] <= r <= EDGE_RADIUS_RANGE[1]):
+        return None
+    rms = math.sqrt(sum((math.hypot(p[0] - mx - cx, p[1] - my - cy) - r) ** 2 for p in points) / n)
+    angles = sorted(math.atan2(p[1] - my - cy, p[0] - mx - cx) for p in points)
+    gaps = [b - a for a, b in zip(angles, angles[1:])] + [angles[0] + 2 * math.pi - angles[-1]]
+    if rms > 0.15 * r or max(gaps) > math.pi:
+        return None  # not a circle, or only an arc of it: the centre is not pinned down
+    return cx + mx, cy + my, r
 
 
 class CubeDetector:
@@ -164,6 +218,9 @@ class CubeDetector:
         self._dr: tuple[float, Vec3] | None = None
         self._dr_vel: tuple[float, float, float, float] | None = None  # (time, vx, vy, vz)
         self._recent: deque[tuple[float, Vec3]] = deque(maxlen=400)
+        self._edges: deque[tuple[float, Vec3]] = deque(maxlen=64)  # where entities came into or left your view
+        self._zone_t = -1e9
+        self._near_target: tuple[float, Vec3] | None = None  # the target of your last aimed skill
 
     @property
     def entity_count(self) -> int:
@@ -266,13 +323,18 @@ class CubeDetector:
                 self._spawn(event, t)
             elif isinstance(event, Despawn):
                 self.diag.count("despawns")
-                self._entities.pop(event.entity_id, None)
+                gone = self._entities.pop(event.entity_id, None)
+                if event.flag == 1 and gone is not None and gone.pos is not None:
+                    self._edges.append((t, gone.pos))  # it left your view
             elif isinstance(event, ZoneChange):
                 # The map vote is not reset here: it follows a sliding window (see WorldLocator).
                 self.diag.zone(t)
                 self._entities.clear()
                 self.tracker.clear_anchors()
                 self._recent.clear()
+                self._edges.clear()
+                self._near_target = None
+                self._zone_t = t
                 if event.pos is not None:
                     self.diag.note(f"teletransporte a ({event.pos[0]:.0f}, {event.pos[1]:.0f}, {event.pos[2]:.0f})")
                     self._teleport = (event.pos, t)
@@ -309,6 +371,11 @@ class CubeDetector:
                 if event.entity_id == self.self_id:
                     self.diag.count("self_facings")
                     self._self_yaw = (t, event.yaw)
+                    if event.target is not None and event.target != self.self_id:
+                        aimed = self._entities.get(event.target)
+                        pos = event.target_pos or (aimed.pos if aimed is not None else None)
+                        if pos is not None:
+                            self._near_target = (t, pos)
 
     # ───── where you are ─────
 
@@ -519,6 +586,15 @@ class CubeDetector:
             return
         if self.self_source == "teletransporte" and self._teleport and now - self._teleport[1] < TELEPORT_FRESH_S:
             return
+        if self._near_target is not None and now - self._near_target[0] <= NEAR_TARGET_S:
+            self._set_self(self._near_target[1], "aproximada", self._self_t)
+            return
+        edges = [p for tt, p in self._edges if now - tt <= EDGE_WINDOW_S]
+        fit = fit_circle(edges) if len(edges) >= EDGE_MIN_POINTS else None
+        if fit is not None:
+            zs = sorted(p[2] for p in edges)
+            self._set_self((fit[0], fit[1], zs[len(zs) // 2]), "aproximada", self._self_t)
+            return
         pts = [p for tt, p in self._recent if now - tt <= APPROX_WINDOW_S]
         pts += [e.pos for e in self._entities.values() if e.pos is not None and now - e.last_seen <= APPROX_WINDOW_S]
         if len(pts) < 5:
@@ -574,6 +650,8 @@ class CubeDetector:
         if sp.pos is not None:
             self._locate(sp.pos, sp.code)
             self._recent.append((t, sp.pos))
+            if old is None and t - self._zone_t > EDGE_SETTLE_S:
+                self._edges.append((t, sp.pos))  # it came into your view
         if old is None:
             self._learn(e)
         if old is None and self.is_cube(e):

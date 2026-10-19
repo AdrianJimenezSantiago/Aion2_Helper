@@ -77,8 +77,10 @@ Usa la misma técnica que los DPS meters open source del juego
 Los paquetes que envía tu cliente van **cifrados por completo** (comprobado en directo), así que tu
 **posición propia** sale del servidor: exacta al entrar en una zona y, después, de los registros de
 movimiento de tu propia entidad, que el servidor envía al empezar a moverte, girar o pararte. Mientras
-no se identifica tu entidad, se estima con el centro de las entidades que el servidor te va mostrando
-(radar con "posición aproximada"). Con tu entidad reconocida, tu posición avanza con cada registro
+no se tiene tu posición, se estima (radar con "posición aproximada"): junto al objetivo de tu última
+habilidad (unos 10 m de error), o en el centro del círculo donde las entidades entran y salen de tu
+radio de visión (20-30 m; idea de Shugo.GG), o, sin más, en el centro de lo que el servidor te muestra.
+Con tu entidad reconocida, tu posición avanza con cada registro
 de velocidad (10 por segundo) y se corrige con cada posición exacta. Si no hay velocidad, el radar desliza tu posición con
 tu velocidad (la de `29 37`, o la medida entre tus registros) en la dirección de tu yaw, hasta que
 llega un registro de parada, para que se mueva de forma continua.
@@ -100,7 +102,8 @@ su mapa +X es el este y +Y el sur. La herramienta detecta sola ese intercambio d
    python -m aion2_helper
    ```
    Ábrelo **antes de entrar con tu personaje**: el servidor dice cuál es tu entidad al entrar al mundo.
-   Si ya estabas jugando, vuelve a la selección de personaje y entra otra vez.
+   Si ya estabas jugando, vuelve a la selección de personaje y entra otra vez, o entra en una mazmorra
+   y sal (también lo reenvía; no basta con teletransportarse).
 5. Pon el juego en **pantalla completa sin bordes** o en ventana: en pantalla completa exclusiva
    Windows no deja dibujar nada encima.
 
@@ -228,7 +231,7 @@ Las luces de la cabecera dicen en qué paso se queda:
 | Luz en ámbar o rojo | Qué significa |
 |---|---|
 | JUEGO | No se encuentra la conexión del juego (Npcap, permisos de administrador, VPN: prueba `--iface all`) |
-| POSICIÓN | Ámbar: posición aproximada (el centro de lo que el servidor te muestra) o desconocida. Verde: exacta. Si el radar pide *vuelve a entrar con tu personaje*, vuelve a la selección de personaje con la herramienta abierta |
+| POSICIÓN | Ámbar: posición aproximada (estimada, de 10 a 30 m de error) o desconocida. Verde: exacta. Si el radar pide *vuelve a entrar con tu personaje*, vuelve a la selección de personaje con la herramienta abierta, o entra en una mazmorra y sal |
 | SPOTS | Hay spots, pero el mapa no se reconoce todavía |
 | CÓDIGO | Aún no se ha visto ningún cubo sobre un spot conocido |
 

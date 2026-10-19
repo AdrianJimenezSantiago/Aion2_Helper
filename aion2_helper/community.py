@@ -34,7 +34,7 @@ from . import cborx
 SOURCE = "aion2.th.gl"
 MAP_PAGE = "https://aion2.th.gl/maps/Verteron"
 CDN = "https://cdn.th.gl/aion2"
-USER_AGENT = "Aion2Helper/0.5.2 (+https://github.com/adrianjimenezsantiago/aion2_helper)"
+USER_AGENT = "Aion2Helper/0.5.3 (+https://github.com/adrianjimenezsantiago/aion2_helper)"
 NODES_RE = re.compile(r"/nodes/(World_[A-Za-z_]+)\.([0-9a-f]{16,64})\.raw")
 # Known files at the time of writing, used only if the map page cannot be read.
 FALLBACK_PATHS = {

@@ -283,6 +283,8 @@ class EntityFacing:
 
     entity_id: int
     yaw: float
+    target: int | None = None
+    target_pos: Vec3 | None = None  # the target's world point, when the cast carries it (mode 02)
 
 
 @dataclass
@@ -430,16 +432,18 @@ def parse_cast_facing(packet: bytes, o: int) -> EntityFacing | None:
     if deg is None:
         return None
     p += 4
-    if mode == 2:  # the target's point, not always a world position (87, 49, 0 live)
+    target_pos = None
+    if mode == 2:  # the target's point: a world position when aimed at another (87, 49, 0 at yourself, live)
         if p + 12 > len(packet) or not all(math.isfinite(v) for v in struct.unpack_from("<fff", packet, p)):
             return None
+        target_pos = _read_pos(packet, p) if target != eid else None
         p += 12
     for _ in range(3):
         _, ln = read_varint(packet, p)
         if ln <= 0:
             return None
         p += ln
-    return EntityFacing(eid, deg % 360) if p == len(packet) else None
+    return EntityFacing(eid, deg % 360, target, target_pos) if p == len(packet) else None
 
 
 def parse_action_pose(packet: bytes, o: int) -> EntityMove | None:

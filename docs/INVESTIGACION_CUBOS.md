@@ -102,6 +102,30 @@ que sigue sale de inspeccionar su versión pública 0.1.43 y se ha contrastado c
   reordena los segmentos TCP con una ventana de 1 s. Nosotros ya fijamos la conexión del juego y
   reordenamos por número de secuencia.
 
+### 3.2 Lo aprendido de Shugo.GG App
+
+[Shugo.GG App](https://shugo.gg/app) (0.3.95) es una app Tauri: Rust para la captura y los
+decodificadores, y una interfaz web. Se ha analizado con permiso expreso de su autor.
+
+- **Los opcodes no van en el programa.** Se descargan con la cuenta (`protocol.json` dentro de un
+  paquete cifrado con una clave de la cuenta) y se asocian a ids lógicos: así sobreviven a los parches
+  sin publicar una versión nueva. El paquete cifrado no se ha abierto. Nosotros, en cambio, aprendemos los
+  opcodes de movimiento solos y dejamos el resto en `config.json`.
+- **Tu personaje llega al entrar al juego**, no al teletransportarte: hay que volver a la selección de
+  personaje, o **entrar en una mazmorra y salir**, que también lo reenvía.
+- **Tu posición, cuando no es exacta**, sale de dos estimaciones que hemos copiado como idea:
+  - **Borde de la visión** (`viewEdge`, 20-30 m): las entidades aparecen y desaparecen al entrar y salir
+    de tu radio de visión, así que tú estás en el centro de ese círculo. Se descartan los spawns de los
+    3 s que siguen a una carga de zona, que llenan toda la visión.
+  - **Cerca del objetivo** (`nearTarget`, ~10 m): al lanzar una habilidad contra algo, estás cerca de
+    ello. `02 38` en modo `02` lleva la posición del objetivo.
+- Según Shugo, andar no envía tu posición. En nuestras trazas sí llegan `1c 37` y `1d 37` de tu entidad
+  mientras andas, así que mantenemos nuestro seguimiento y usamos sus estimaciones solo como respaldo.
+- Nombres de campos de sus decodificadores, útiles para leer nuestras trazas: spawn = entidad, tipo,
+  flags, nombre, plantilla (código de NPC); movimiento = tipo, posición, dirección, valor, parada,
+  aterrizaje, orientación; carga de zona = bytes, posición, valor; muerte = víctima, flags de combate,
+  flags de desaparición, motivo, habilidad, asesino.
+
 ## 4. Límites y trabajo futuro
 
 - **Grupos de spots**: con los grupos de metabot podríamos tachar todo el grupo al ver su cubo. Su API

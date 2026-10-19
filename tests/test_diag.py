@@ -742,3 +742,56 @@ def test_login_record_fixes_your_entity_and_casts_turn_your_arrow():
     det.handle(EntityFacing(777, 0.0))  # another player's cast: not your facing
     det.handle(EntityFacing(2348, 90.0))  # +Y, south on the game map
     assert det.snapshot().heading_deg == pytest_approx(180.0)
+
+
+def test_position_is_the_centre_of_where_entities_enter_and_leave_your_view():
+    """Shugo.GG: what comes into and leaves your view lies on a circle around you."""
+    import math
+    import random
+
+    from aion2_helper.protocol import Despawn, ZoneChange
+
+    rnd = random.Random(7)
+    det, clock = _det()
+    det.handle(ZoneChange())
+    clock.t += 10
+    me = (10000.0, 20000.0)
+    for i in range(10):
+        a = rnd.uniform(0, 2 * math.pi)
+        r = 4000 + rnd.uniform(-300, 300)
+        clock.t += 1
+        det.handle(Spawn(100 + i, 0x0C, 2_100_000, (me[0] + r * math.cos(a), me[1] + r * math.sin(a), 500.0)))
+    det.handle(Despawn(100, 1))  # leaves your view where it stood
+    snap = det.snapshot()
+    assert snap.self_source == "aproximada"
+    assert math.hypot(snap.self_pos[0] - me[0], snap.self_pos[1] - me[1]) < 500
+
+
+def test_an_arc_of_entities_does_not_pin_you_down():
+    import math
+
+    from aion2_helper.detector import fit_circle
+
+    arc = [(4000 * math.cos(a / 10), 4000 * math.sin(a / 10), 0.0) for a in range(10)]  # 52 degrees
+    assert fit_circle(arc) is None
+    ring = [(4000 * math.cos(a), 4000 * math.sin(a), 0.0) for a in range(8)]
+    cx, cy, r = fit_circle(ring)
+    assert abs(cx) < 1 and abs(cy) < 1 and abs(r - 4000) < 1
+
+
+def test_your_aimed_skill_places_you_near_its_target():
+    from aion2_helper.protocol import EntityFacing, SelfIdentity, ServerStreamParser
+
+    # Live (2026-10-14): 4262 casts at da b3 02 (39386), carrying where it stands.
+    (fc,) = ServerStreamParser().consume(
+        _live("27 02 38 a6 21 00 68 bf aa 00 03 02 da b3 02 26 68 95 42 6c bf 1a 47 9b 83 78 47 95 57 e7 46 b7 60 01 c6 6e")
+    )[0]
+    assert fc.target == 39386 and fc.target_pos == pytest_approx((39615.4, 63619.6, 29611.8))
+    det, clock = _det()
+    det.handle(SelfIdentity(4262, confirmed=True))
+    det.handle(fc)
+    snap = det.snapshot()
+    assert snap.self_source == "aproximada" and snap.self_pos == fc.target_pos
+    det.handle(EntityFacing(4262, 0.0, 4262))  # a skill on yourself places nothing
+    clock.t += 11
+    assert det.snapshot().self_pos == fc.target_pos  # held, as any estimate, until something better

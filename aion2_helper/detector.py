@@ -15,6 +15,7 @@ from .config import Config
 from .diag import Diagnostics, log
 from .protocol import (
     Despawn,
+    EntityFacing,
     EntityMove,
     EntityVelocity,
     Event,
@@ -96,6 +97,7 @@ class Snapshot:
     cube_rule: str | None = None  # "key", "mixed" or None
     next_spot: SpotView | None = None  # nearest spot still to check
     pending_near: int = 0  # spots still to check within the radar range
+    self_identified: bool = False  # your entity is known for sure (4a 36 or the 33 36 login record)
 
 
 def bearing(src: Vec3, dst: Vec3) -> float:
@@ -146,7 +148,8 @@ class CubeDetector:
         self._self_t = 0.0
         self._self_candidates: dict[int, int] = {}
         self._self_hint: int | None = None
-        self._self_from_stats = False  # self_id came from a 4a 36 stats record: nothing else may change it
+        # self_id came from a record only ever about you (4a 36 stats, 33 36 login): no scoring may change it
+        self._self_confirmed = False
         self._others: set[int] = set()  # other players: never you
         # Every id that ever spawned on this connection (monsters, objects, pets, players): never you.
         # Not cleared at a zone change, whose bundle can carry your pet's spawn just before it.
@@ -293,13 +296,26 @@ class CubeDetector:
                 if len(self._others) > 5000:
                     self._others.clear()
             elif isinstance(event, SelfStats):
-                self._self_stats(event.entity_id, t)
+                self._confirm_self(event.entity_id, "estadísticas 4a 36")
             elif isinstance(event, SelfIdentity):
-                # Only a hint: what follows the 33 36 opcode is not proven to be the entity id
-                # the movement records use (a live session got 16329 there, 2348 in the moves).
-                self._self_hint = event.entity_id
+                if event.confirmed:
+                    # The login record, name and all: sent only when you enter the world, which is
+                    # why the tool has to be running before you pick your character (PetTracker).
+                    self._confirm_self(event.entity_id, "entrada al mundo 33 36")
+                else:
+                    # A bare 33 36 is only a hint (a live session got 16329 there, 2348 in the moves).
+                    self._self_hint = event.entity_id
+            elif isinstance(event, EntityFacing):
+                if event.entity_id == self.self_id:
+                    self.diag.count("self_facings")
+                    self._self_yaw = (t, event.yaw)
 
     # ───── where you are ─────
+
+    @property
+    def self_identified(self) -> bool:
+        """Your entity came from a record only about you, not from guessing."""
+        return self._self_confirmed
 
     @property
     def self_known(self) -> bool:
@@ -387,13 +403,13 @@ class CubeDetector:
             return None
         return bearing(a, b)
 
-    def _self_stats(self, eid: int, t: float) -> None:
-        """Your own stats record names your entity for sure."""
-        self._self_from_stats = True
+    def _confirm_self(self, eid: int, source: str) -> None:
+        """A record only ever about you names your entity for sure."""
+        self._self_confirmed = True
         if eid == self.self_id:
             return
-        log.info("Tu entidad (registro de estadísticas): id %s", eid)
-        self.diag.note(f"tu entidad: {eid} (estadísticas 4a 36)")
+        log.info("Tu entidad (%s): id %s", source, eid)
+        self.diag.note(f"tu entidad: {eid} ({source})")
         self.self_id = eid
         self._self_candidates.clear()
         self._dr = self._dr_vel = None
@@ -465,7 +481,7 @@ class CubeDetector:
         self._self_candidates[mv.entity_id] = n
         ranked = sorted(self._self_candidates.values(), reverse=True)
         second = ranked[1] if len(ranked) > 1 else 0
-        settled = self._self_from_stats or (
+        settled = self._self_confirmed or (
             self.self_id is not None and self.self_source == "servidor" and t - self._self_t < 10
         )
         if not settled and n == ranked[0] and n >= 10 and n >= 3 * second:
@@ -518,7 +534,7 @@ class CubeDetector:
             self.handle(ZoneChange(), t)
             self.map_number = None
             self.self_id = None
-            self._self_from_stats = False
+            self._self_confirmed = False
             self._self_yaw = None
             self._moving = False
             self._last_fix = None
@@ -670,6 +686,7 @@ class CubeDetector:
             snap = Snapshot(self.status, me, self.self_known, cubes, nearby, [], len(self._entities), self.world_status,
                             self.self_source, self.heading(now) if precise else None,
                             self.velocity(now) if precise else None, pos_time)  # fmt: skip
+            snap.self_identified = self._self_confirmed
             m = self.current_map
             if m is not None:
                 snap.map_id, snap.map_name, snap.cube_rule = m.map_id, m.name, m.cube_rule

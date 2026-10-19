@@ -722,3 +722,23 @@ def test_flying_records_carry_your_velocity():
     assert (v.vx, v.vy, v.vz) == (pytest.approx(-1149.4, abs=0.1), pytest.approx(967.1, abs=0.1), pytest.approx(550.8, abs=0.1))
     (st,) = ServerStreamParser().consume(frame(b"\x4a\x36\xa1\x72\x01\x05\x00\x10\x00\x00\x00" + b"\x00" * 8))[0]
     assert st == SelfStats(14625)
+
+
+def test_login_record_fixes_your_entity_and_casts_turn_your_arrow():
+    """The 33 36 login record names you for sure (PetTracker); 02 38 says where you face."""
+    from aion2_helper.protocol import EntityFacing, EntityMove, SelfIdentity, ZoneChange
+
+    det, clock = _det()
+    det.handle(SelfIdentity(9999))  # a bare 33 36: only a hint
+    assert det.self_id is None and not det.snapshot().self_identified
+    det.handle(SelfIdentity(2348, confirmed=True))
+    assert det.self_id == 2348 and det.snapshot().self_identified
+    det.handle(ZoneChange((1000.0, 1000.0, 0.0)))
+    for i in range(20):  # someone else moving where you landed: never taken for you
+        clock.t += 0.1
+        det.handle(EntityMove(777, (1000.0 + i * 50, 1000.0, 0.0)))
+    assert det.self_id == 2348
+    det.handle(EntityMove(2348, (1000.0, 1000.0, 0.0)))
+    det.handle(EntityFacing(777, 0.0))  # another player's cast: not your facing
+    det.handle(EntityFacing(2348, 90.0))  # +Y, south on the game map
+    assert det.snapshot().heading_deg == pytest_approx(180.0)

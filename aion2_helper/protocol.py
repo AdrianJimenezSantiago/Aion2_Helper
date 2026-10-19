@@ -33,7 +33,16 @@ What is known comes from the open-source DPS meters that read the same stream
                                                      (A2Tools), so its id is your entity
     2a 38 | 2b 38 <target> ... <caster varint> <u8> <u32> <u8> <x> <y> <z>   an effect, with its
                                                      caster's position: yours when you cast it on you
-    33 36 <id varint> ...                            your self record, at each map load
+    33 36 <id varint> <4 bytes> <07|37|3f> <len u8> <name utf-8> <server u16> ...   the character
+                                                     you log in with: your entity, for sure. Only sent
+                                                     when you enter the world from character selection
+                                                     (PetTracker, 0Fox2Give), so start before logging in
+    02 38 <id varint> 00 <skill u32> <u8> <00|02> <target varint> <facing f32 deg> [<x> <y> <z> if 02]
+          <3 varints>                                a skill cast, with where its caster faces (same
+                                                     angle as the move yaw: 120.0 vs 119.97, live);
+                                                     your flight buffs send it about once a second
+    3c 37 <id varint> 03 <x> <y> <z> <facing f32 deg> (00 00|07 02) 01 <skill u32> <4 bytes> <varint>
+                                                     an entity acting: its position and facing (PetTracker)
     34 36 <id varint> <kind u8> 00 <code u32> <x> <y> <z> ...   an object appeared: gathering
                                                      nodes (1500000 sat on an odyle node to 0.0 m),
                                                      Empyrean Traces, and the Hidden Cubes
@@ -265,6 +274,15 @@ class EntityVelocity:
 @dataclass
 class SelfIdentity:
     entity_id: int
+    confirmed: bool = False  # the whole login layout (with a name) was there, not only the opcode
+
+
+@dataclass
+class EntityFacing:
+    """Where an entity faces, from a skill cast: degrees, the move yaw's convention (atan2(dy, dx))."""
+
+    entity_id: int
+    yaw: float
 
 
 @dataclass
@@ -279,7 +297,10 @@ class PlayerSpawn:
     entity_id: int
 
 
-Event = Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn | EntityVelocity | SelfStats
+Event = (
+    Spawn | Despawn | ZoneChange | EntityMove | MapLoad | SelfIdentity | PlayerSpawn | EntityVelocity | SelfStats
+    | EntityFacing
+)
 
 SELF_STATS_OPCODE = b"\x4a\x36"
 TAIL_VELOCITY_OPCODE = b"\x2a\x37"  # velocity floats + yaw at the end
@@ -288,6 +309,10 @@ VELOCITY_OPCODE = b"\x1d\x37"
 VELOCITY_UNIT = 10.0  # cm/s per unit of the 1d 37 bytes (fitted on a live walk: exactly 10)
 FLOAT_VELOCITY_OPCODE = b"\x20\x37"
 EFFECT_OPCODES = (b"\x2a\x38", b"\x2b\x38")
+CAST_OPCODE = b"\x02\x38"
+ACTION_POSE_OPCODE = b"\x3c\x37"
+SKILL_MIN, SKILL_MAX = 11_000_000, 20_000_000
+LOGIN_NAME_MARKS = (0x07, 0x37, 0x3F)
 
 
 def _i8(b: int) -> int:
@@ -361,6 +386,81 @@ def parse_effect_caster_pos(packet: bytes, o: int) -> "EntityMove | None":
         if ln == k and caster == target:
             return EntityMove(target, pos)
     return None
+
+def parse_self_identity(packet: bytes, o: int) -> SelfIdentity:
+    """``33 36``: confirmed only when the login layout is all there; the name is checked, never kept."""
+    eid, l1 = read_varint(packet, o + 2)
+    p = o + 2 + l1
+    if l1 <= 0 or not (100 <= eid <= 999_999) or p + 6 > len(packet):
+        return SelfIdentity(eid if l1 > 0 else 0)
+    p += 4
+    n = packet[p + 1]
+    if packet[p] not in LOGIN_NAME_MARKS or not (1 <= n <= 30) or p + 2 + n + 2 > len(packet):
+        return SelfIdentity(eid)
+    try:
+        name = packet[p + 2 : p + 2 + n].decode("utf-8")
+    except UnicodeDecodeError:
+        return SelfIdentity(eid)
+    ok = any(c.isalpha() for c in name) and all(c.isalnum() or c in "'-_" for c in name)
+    return SelfIdentity(eid, ok)
+
+
+def _float_deg(packet: bytes, at: int) -> float | None:
+    if at + 4 > len(packet):
+        return None
+    d = struct.unpack_from("<f", packet, at)[0]
+    return d if math.isfinite(d) and -180.0 <= d <= 360.0 else None
+
+
+def parse_cast_facing(packet: bytes, o: int) -> EntityFacing | None:
+    """``02 38``: a skill cast and where its caster faces. Every field is checked to the end."""
+    eid, l1 = read_varint(packet, o + 2)
+    p = o + 2 + l1
+    if l1 <= 0 or eid <= 0 or p + 7 > len(packet) or packet[p] != 0:
+        return None
+    skill = struct.unpack_from("<I", packet, p + 1)[0]
+    mode = packet[p + 6]
+    if not (SKILL_MIN <= skill < SKILL_MAX) or mode not in (0, 2):
+        return None
+    target, l2 = read_varint(packet, p + 7)
+    if l2 <= 0 or target <= 0:
+        return None
+    p += 7 + l2
+    deg = _float_deg(packet, p)
+    if deg is None:
+        return None
+    p += 4
+    if mode == 2:  # the target's point, not always a world position (87, 49, 0 live)
+        if p + 12 > len(packet) or not all(math.isfinite(v) for v in struct.unpack_from("<fff", packet, p)):
+            return None
+        p += 12
+    for _ in range(3):
+        _, ln = read_varint(packet, p)
+        if ln <= 0:
+            return None
+        p += ln
+    return EntityFacing(eid, deg % 360) if p == len(packet) else None
+
+
+def parse_action_pose(packet: bytes, o: int) -> EntityMove | None:
+    """``3c 37``: an entity acting, with its position and facing (layout from PetTracker)."""
+    eid, l1 = read_varint(packet, o + 2)
+    p = o + 2 + l1
+    if l1 <= 0 or not (1 <= eid <= MAX_ENTITY_ID) or p + 29 > len(packet) or packet[p] != 0x03:
+        return None
+    pos = _read_pos(packet, p + 1)
+    deg = _float_deg(packet, p + 13)
+    if pos is None or deg is None:
+        return None
+    p += 17
+    if packet[p : p + 2] not in (b"\x00\x00", b"\x07\x02") or packet[p + 2] != 0x01:
+        return None
+    skill = struct.unpack_from("<I", packet, p + 3)[0]
+    _, ln = read_varint(packet, p + 11)
+    if not (SKILL_MIN <= skill < SKILL_MAX) or ln <= 0 or p + 11 + ln != len(packet):
+        return None
+    return EntityMove(eid, pos, yaw=deg % 360)
+
 
 # Movement records not in the table are learned: an opcode whose short packets keep carrying
 # <id varint> <skip bytes> <plausible position> is taken as one, with that skip.
@@ -530,7 +630,7 @@ class ServerStreamParser:
         self._spawn_leads = {c[0] for c in opcodes.spawn}
         # opcode -> [packets seen, hits per skip 0..3]
         self._move_stats: dict[bytes, list[int]] = {}
-        self._not_moves = {TAIL_VELOCITY_OPCODE, VELOCITY_OPCODE, FLOAT_VELOCITY_OPCODE, SELF_STATS_OPCODE} | (  # 2a 37: seen live, not a position
+        self._not_moves = {CAST_OPCODE, TAIL_VELOCITY_OPCODE, VELOCITY_OPCODE, FLOAT_VELOCITY_OPCODE, SELF_STATS_OPCODE} | (  # 2a 37: seen live, not a position
             set(opcodes.spawn) | set(opcodes.despawn) | set(opcodes.zone_change) | set(opcodes.map_load)
             | set(opcodes.self_identity) | set(opcodes.object_spawn) | set(opcodes.player_spawn)
         )  # fmt: skip
@@ -614,6 +714,16 @@ class ServerStreamParser:
             if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:
                 events.append(SelfStats(eid))
             return
+        if op == CAST_OPCODE:
+            fc = parse_cast_facing(packet, o)
+            if fc is not None:
+                events.append(fc)
+            return
+        if op == ACTION_POSE_OPCODE:
+            mv = parse_action_pose(packet, o)
+            if mv is not None:
+                events.append(mv)
+                return
         if op in EFFECT_OPCODES:
             mv = parse_effect_caster_pos(packet, o)
             if mv is not None:
@@ -639,9 +749,9 @@ class ServerStreamParser:
             events.append(MapLoad(struct.unpack_from("<I", packet, o + 6)[0], _read_pos(packet, o + 2 + MAP_LOAD_POS_AT)))
             return
         if op in self.op.self_identity:
-            eid, l1 = read_varint(packet, o + 2)
-            if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:
-                events.append(SelfIdentity(eid))
+            si = parse_self_identity(packet, o)
+            if 1 <= si.entity_id <= MAX_ENTITY_ID:
+                events.append(si)
         if op in self.op.player_spawn:
             eid, l1 = read_varint(packet, o + 2)
             if l1 > 0 and 1 <= eid <= MAX_ENTITY_ID:

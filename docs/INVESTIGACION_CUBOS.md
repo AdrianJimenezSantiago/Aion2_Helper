@@ -79,6 +79,29 @@ El radio a partir del cual un spot cuenta como revisado empieza en 40 m y se aju
 mediana de la distancia a la que te aparecen los cubos (el servidor solo envía las entidades que tienes
 cerca).
 
+### 3.1 Lo aprendido de PetTracker
+
+[PetTracker](https://github.com/0Fox2Give/PetTracker) es un overlay de mascotas que lee el mismo
+tráfico. El repositorio solo publica el instalador y el sistema de actualizaciones, no el código; lo
+que sigue sale de inspeccionar su versión pública 0.1.43 y se ha contrastado con nuestras trazas.
+
+- **Hay que abrirlo antes de entrar al personaje.** Su entidad propia sale de `33 36`, que el servidor
+  manda al entrar al mundo: `<id> <4 bytes> <07|37|3f> <long.> <nombre UTF-8> <servidor u16>`. Solo lo
+  acepta con todo ese formato (id entre 100 y 999 999, nombre de 1 a 30 letras, dígitos, `'`, `-` o `_`).
+  Nosotros lo tomábamos como pista porque un `33 36` sin validar no coincidía con los movimientos;
+  ahora uno completo fija tu entidad igual que `4a 36`, y uno incompleto sigue siendo una pista.
+- **Distingue entidades por formato exacto, no por heurística.** Cada registro se valida hasta el
+  último byte (longitud exacta, rangos del código de NPC 1 000 000-10 000 000 y de habilidad
+  11 000 000-20 000 000), y nunca adivina quién eres: sin `33 36`, no calcula nada tuyo.
+- **`02 38`** (lanzar habilidad) lleva la orientación en grados de quien la lanza; en nuestras trazas
+  coincide con el yaw de los movimientos (120,0 / 119,97; −7,4 / 352,6). Llega también de otros
+  jugadores: solo se usa la de tu entidad.
+- **`3c 37`** da posición y orientación de una entidad que actúa.
+- **Al teletransportarte (`23 36`) vacía todo** lo que tenía de alrededor, como ya hacemos.
+- Filtra las conexiones por proceso (`AION2`, `AION2-Win64-Shipping`) con la tabla TCP de Windows y
+  reordena los segmentos TCP con una ventana de 1 s. Nosotros ya fijamos la conexión del juego y
+  reordenamos por número de secuencia.
+
 ## 4. Límites y trabajo futuro
 
 - **Grupos de spots**: con los grupos de metabot podríamos tachar todo el grupo al ver su cubo. Su API

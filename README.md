@@ -59,9 +59,17 @@ Usa la misma técnica que los DPS meters open source del juego
 - `20 37 <id> <flags> <5 bytes> <vx> <vy> <vz>`: velocidad en floats (cm/s), al volar.
 - `2a 37 <id> … <vx> <vy> <vz> <yaw>` y `28 37` / `29 37 <id> <2 bytes> <x> <y> <z> <vx> <vy> <vz>`: al
   volar, velocidad (y posición) 10 veces por segundo.
-- `4a 36 <id> …`: tus estadísticas; solo llegan de tu personaje, así que su id es tu entidad. Mientras
-  no llega, tu entidad se deduce de quién se mueve sin haber aparecido como monstruo, objeto o mascota
-  (los flags `05` no sirven: otros jugadores también los llevan).
+- `33 36 <id> <4 bytes> <07|37|3f> <long.> <nombre> <servidor u16>`: el personaje con el que entras
+  al mundo. Es tu entidad, sin dudas, pero **solo llega al entrar desde la selección de personaje**
+  (así lo hace [PetTracker](https://github.com/0Fox2Give/PetTracker)). Solo cuenta si viene completo;
+  el nombre se comprueba y no se guarda.
+- `4a 36 <id> …`: tus estadísticas; solo llegan de tu personaje, así que su id también es tu entidad.
+  Sin ninguno de los dos, tu entidad se deduce de quién se mueve sin haber aparecido como monstruo,
+  objeto o mascota (los flags `05` no sirven: otros jugadores también los llevan).
+- `02 38 <id> 00 <habilidad u32> <u8> <modo> <objetivo> <orientación f32>`: una habilidad, con hacia
+  dónde mira quien la lanza, en grados (120,0 frente al yaw 119,97 de tu marcha, en directo). Los buffs
+  de vuelo la mandan cada segundo: es la flecha del radar mientras vuelas.
+- `3c 37 <id> 03 <x> <y> <z> <orientación f32> …`: una entidad actuando, con su posición y orientación.
 - `2a 38` / `2b 38`: un efecto con la posición de quien lo lanza; si te lo lanzas tú (montura,
   vuelo), es tu posición, más o menos cada segundo.
 - Bloques LZ4 dentro de otros paquetes: también se abren (llevan spawns).
@@ -91,6 +99,8 @@ su mapa +X es el este y +Y el sur. La herramienta detecta sola ese intercambio d
    ```
    python -m aion2_helper
    ```
+   Ábrelo **antes de entrar con tu personaje**: el servidor dice cuál es tu entidad al entrar al mundo.
+   Si ya estabas jugando, vuelve a la selección de personaje y entra otra vez.
 5. Pon el juego en **pantalla completa sin bordes** o en ventana: en pantalla completa exclusiva
    Windows no deja dibujar nada encima.
 
@@ -218,7 +228,7 @@ Las luces de la cabecera dicen en qué paso se queda:
 | Luz en ámbar o rojo | Qué significa |
 |---|---|
 | JUEGO | No se encuentra la conexión del juego (Npcap, permisos de administrador, VPN: prueba `--iface all`) |
-| POSICIÓN | Ámbar: posición aproximada (el centro de lo que el servidor te muestra) o desconocida. Verde: exacta |
+| POSICIÓN | Ámbar: posición aproximada (el centro de lo que el servidor te muestra) o desconocida. Verde: exacta. Si el radar pide *vuelve a entrar con tu personaje*, vuelve a la selección de personaje con la herramienta abierta |
 | SPOTS | Hay spots, pero el mapa no se reconoce todavía |
 | CÓDIGO | Aún no se ha visto ningún cubo sobre un spot conocido |
 

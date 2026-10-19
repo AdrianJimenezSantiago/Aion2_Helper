@@ -95,3 +95,51 @@ def test_garbage_does_not_crash():
     parser = ServerStreamParser()
     for _ in range(200):
         parser.consume(bytes(rnd.randrange(256) for _ in range(rnd.randrange(1, 400))))
+
+
+def _packet(hexbody: str) -> bytes:
+    body = bytes.fromhex(hexbody)
+    return encode_varint(len(body) + 4) + body
+
+
+def test_login_record_names_your_entity_only_with_the_whole_layout():
+    from aion2_helper.protocol import parse_self_identity
+
+    body = b"\x33\x36" + encode_varint(2348) + b"\x01\x02\x03\x04\x07\x06" + "Tester".encode() + b"\x05\x00"
+    pkt = encode_varint(len(body) + 4) + body
+    o = len(encode_varint(len(body) + 4))
+    assert parse_self_identity(pkt, o).entity_id == 2348
+    assert parse_self_identity(pkt, o).confirmed
+    bare = encode_varint(2348 + 0) + b"\x00" * 3
+    pkt = encode_varint(len(bare) + 6) + b"\x33\x36" + bare
+    assert not parse_self_identity(pkt, o).confirmed
+    events, _ = ServerStreamParser().consume(frame(body))
+    assert [(e.entity_id, e.confirmed) for e in events] == [(2348, True)]
+
+
+def test_live_cast_gives_the_casters_facing():
+    from aion2_helper.protocol import EntityFacing, parse_cast_facing
+
+    # Live (2026-10-14): you, ca 03 (458), walking at a move yaw of 119.97 deg.
+    walk = _packet("02 38 ca 03 00 c5 8e 15 01 31 00 ca 03 eb ef ef 42 9e 55 01 00")
+    fc = parse_cast_facing(walk, 1)
+    assert fc.entity_id == 458 and abs(fc.yaw - 120.0) < 0.1
+    # A cast at a target, with its point: -7.4 deg, the 352.6 of that player's move yaw.
+    aimed = _packet("02 38 a6 21 00 25 d9 a7 00 01 02 a6 21 81 8c ec c0 55 63 ae 42 54 d8 43 42 00 00 00 00 90 4e 01 f4 03")
+    fc = parse_cast_facing(aimed, 1)
+    assert fc.entity_id == 4262 and abs(fc.yaw - 352.6) < 0.1
+    assert parse_cast_facing(walk[:-1], 1) is None  # cut short: not taken
+    events, _ = ServerStreamParser().consume(walk)
+    assert isinstance(events[0], EntityFacing)
+
+
+def test_action_pose_gives_position_and_facing():
+    from aion2_helper.protocol import EntityMove, parse_action_pose
+
+    body = (
+        b"\x3c\x37" + encode_varint(458) + b"\x03" + struct.pack("<fff", 39143.0, 20112.0, 39731.0)
+        + struct.pack("<f", 90.0) + b"\x00\x00\x01" + struct.pack("<I", 18190021) + b"\x00" * 4 + b"\x01"
+    )  # fmt: skip
+    events, _ = ServerStreamParser().consume(frame(body))
+    assert events == [EntityMove(458, (39143.0, 20112.0, 39731.0), yaw=90.0)]
+    assert parse_action_pose(frame(body[:-1]), 1) is None

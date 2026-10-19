@@ -491,6 +491,9 @@ class Overlay:
 
         if snap.self_source == "aproximada":
             c.create_text(cx, cy + r - 32, text="posición aproximada", fill=T.WARN, font=f["tiny"])
+            if not snap.self_identified:
+                # Your entity is named when you enter the world: start the tool before picking a character.
+                c.create_text(cx, cy + r - 20, text="vuelve a entrar con tu personaje", fill=T.WARN, font=f["tiny"])
 
         # you: a dot, or an arrow pointing where you are walking
         c.create_oval(cx - 9, cy - 9, cx + 9, cy + 9, fill=T.fade(T.ACCENT, 0.12, T.RADAR_BG), outline="")

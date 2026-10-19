@@ -8,8 +8,11 @@ What is known comes from the open-source DPS meters that read the same stream
     <varint len> <payload>                   a packet; len counts the payload plus 4
     <varint len> FF FF <u32 size> <lz4>      an LZ4 bundle of further packets
 
-    41 36 <id varint> <mask u32> ...         NPC / object / summon spawn (40 36 before June 2026)
-          ... <code u24 LE> 00 (00|40) 02 <x f32> <y f32> <z f32> ...
+    41 36 <id varint> <kind> <kind flags> <name flags> [<len u8> <name> if name flags & 1]
+          <code u32> <2 bytes> <x f32> <y f32> <z f32> ...   NPC / summon spawn (40 36 before June
+                                                     2026; layout from Shugo.GG's decoder). Kinds
+                                                     1d, 1f and 5f are summons and pets, whose tail
+                                                     names their owner: <id> 01 02 <12 bytes> 07 02 06 <owner u32>
     42 36 <id varint> <0 varint> <flag>      death (flag 3) or gone from the world (flag 7)
     23 36 00 <5 bytes> <x f32> <y f32> <z f32> ...   the local player teleported (a zone load): where you are
     21 36 <u32> <u32 map id> <8 bytes> <x> <y> <z>   map load (Map table id: 1010 = Verteron), and where you are
@@ -232,6 +235,7 @@ class Spawn:
     code: int | None
     pos: Vec3 | None
     raw: bytes = field(repr=False, default=b"")
+    owner: int | None = None  # the entity a summon or pet belongs to
 
 
 @dataclass
@@ -539,6 +543,22 @@ def _read_pos(data: bytes, at: int) -> Vec3 | None:
     return (x, y, z) if plausible_world_pos(x, y, z) else None
 
 
+SUMMON_KINDS = (0x1D, 0x1F, 0x5F)
+
+
+def _spawn_owner(data: bytes, at: int, idbytes: bytes) -> int | None:
+    """A summon's tail: ``<its id> 01 02 <12 bytes> 07 02 06 <owner u32>`` (Shugo.GG)."""
+    n = len(idbytes)
+    i = data.find(idbytes, at)
+    while i >= 0 and i + n + 21 <= len(data):
+        k = i + n
+        if data[k : k + 2] == b"\x01\x02" and data[k + 14 : k + 17] == b"\x07\x02\x06":
+            owner = struct.unpack_from("<I", data, k + 17)[0]
+            return owner if 1 <= owner <= MAX_ENTITY_ID else None
+        i = data.find(idbytes, i + 1)
+    return None
+
+
 def parse_spawn_at(data: bytes, at: int) -> Spawn | None:
     """Parses a spawn record whose opcode starts at ``at``."""
     eid, elen = read_varint(data, at + 2)
@@ -548,6 +568,16 @@ def parse_spawn_at(data: bytes, at: int) -> Spawn | None:
     if off + 4 > len(data):
         return None
     kind = data[off]
+    # The decoder's own layout: kind, kind flags, name flags, [name], code u32, 2 bytes, position.
+    p = off + 3
+    if data[off + 2] & 1:
+        p += 1 + data[p]
+    if p + 18 <= len(data) and data[p + 5] == 0x02:
+        code = struct.unpack_from("<I", data, p)[0]
+        pos = _read_pos(data, p + 6)
+        if 1 <= code <= MAX_ENTITY_ID and pos is not None:
+            owner = _spawn_owner(data, p + 18, data[at + 2 : off]) if kind in SUMMON_KINDS else None
+            return Spawn(eid, kind, code, pos, bytes(data[at : min(len(data), at + 96)]), owner)
     code = None
     pos = None
     end = min(len(data) - 2, off + 60)

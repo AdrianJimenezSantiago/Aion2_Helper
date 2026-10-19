@@ -121,10 +121,18 @@ decodificadores, y una interfaz web. Se ha analizado con permiso expreso de su a
     ello. `02 38` en modo `02` lleva la posición del objetivo.
 - Según Shugo, andar no envía tu posición. En nuestras trazas sí llegan `1c 37` y `1d 37` de tu entidad
   mientras andas, así que mantenemos nuestro seguimiento y usamos sus estimaciones solo como respaldo.
-- Nombres de campos de sus decodificadores, útiles para leer nuestras trazas: spawn = entidad, tipo,
-  flags, nombre, plantilla (código de NPC); movimiento = tipo, posición, dirección, valor, parada,
-  aterrizaje, orientación; carga de zona = bytes, posición, valor; muerte = víctima, flags de combate,
-  flags de desaparición, motivo, habilidad, asesino.
+- Sus decodificadores (Rust, desensamblados) confirman y afinan formatos:
+  - **Aparición de NPC**: `<id> <tipo> <flags> <flags de nombre> [<long. u8> <nombre> si flags & 1]
+    <código u32> <2 bytes> <x> <y> <z>`. Lo leemos ahora con este orden fijo (y con nombre, para los
+    NPC con nombre) y solo si no encaja buscamos el código como antes.
+  - **Invocaciones y mascotas** (tipos `1d`, `1f`, `5f`): al final del registro va su dueño,
+    `<id> 01 02 <12 bytes> 07 02 06 <dueño u32>`. Lo guardamos en el registro de descubrimiento.
+  - **Carga de zona**: `<entidad 0> <5 bytes a cero> <x> <y> <z> <valor u32> <cola>`: nuestro `23 36`.
+  - Movimiento = tipo, posición, dirección, valor, parada, aterrizaje, orientación; muerte = víctima,
+    flags de combate, flags de desaparición, motivo, habilidad, asesino.
+  - No hay decodificador de objetos (`34 36`): Shugo no ve nodos, Empyrean Traces ni cubos en directo;
+    los de su mapa salen de su web.
+  - Qué opcode corresponde a cada decodificador solo está en el `protocol.json` cifrado.
 
 ## 4. Límites y trabajo futuro
 

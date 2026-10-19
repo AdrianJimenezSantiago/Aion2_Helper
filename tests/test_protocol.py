@@ -143,3 +143,23 @@ def test_action_pose_gives_position_and_facing():
     events, _ = ServerStreamParser().consume(frame(body))
     assert events == [EntityMove(458, (39143.0, 20112.0, 39731.0), yaw=90.0)]
     assert parse_action_pose(frame(body[:-1]), 1) is None
+
+
+def test_spawn_layout_with_a_name_and_a_summons_owner():
+    from aion2_helper.protocol import parse_spawn_at
+
+    name = "Kromede".encode()
+    named = (
+        b"\x41\x36" + encode_varint(900) + bytes([0x0C, 0x00, 0x01, len(name)]) + name
+        + struct.pack("<I", 2_100_555) + b"\x00\x02" + struct.pack("<fff", 100.0, 200.0, 300.0) + b"\x00" * 4
+    )  # fmt: skip
+    sp = parse_spawn_at(named, 0)
+    assert (sp.entity_id, sp.code, sp.pos, sp.owner) == (900, 2_100_555, (100.0, 200.0, 300.0), None)
+    eid = encode_varint(30632)
+    pet = (
+        b"\x41\x36" + eid + bytes([0x1F, 0x00, 0x00]) + struct.pack("<I", 3_000_111) + b"\x00\x02"
+        + struct.pack("<fff", 1.0e4, 2.0e4, 300.0) + b"\x00" * 6
+        + eid + b"\x01\x02" + b"\x00" * 12 + b"\x07\x02\x06" + struct.pack("<I", 7470) + b"\x00"
+    )  # fmt: skip
+    sp = parse_spawn_at(pet, 0)
+    assert sp.code == 3_000_111 and sp.owner == 7470

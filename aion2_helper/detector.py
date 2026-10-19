@@ -642,6 +642,7 @@ class CubeDetector:
                 "id": sp.entity_id,
                 "code": sp.code,
                 "kind": sp.kind,
+                "owner": sp.owner,
                 "pos": sp.pos,
                 "self": self.tracker.position,
                 "raw": sp.raw.hex(),
